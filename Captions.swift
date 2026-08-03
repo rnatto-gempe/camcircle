@@ -766,7 +766,14 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let arg = parts.count > 1 ? parts[1] : ""
 
         switch verb {
-        case "start", "listen": startMic()
+        case "start", "listen":
+            // Para antes de subir. O `start` puro voltava "sem erro" quando a
+            // fonte já se julgava ativa e na prática estava parada — o toggle
+            // recuperava e o start não. Reiniciar sempre é idempotente.
+            stopMic()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.startMic()
+            }
         case "stop": stopMic()
         case "toggle": micTranscriber.isListening ? stopMic() : startMic()
         case "system":
