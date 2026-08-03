@@ -504,6 +504,12 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var sysChunks: ChunkTranscriber!
     private var chunkMode = true
 
+    /// O microfone deveria estar escutando. Separado de `isRunning` para o
+    /// watchdog saber que houve uma queda em vez de um desligamento pedido.
+    private var wantsMic = false
+    private var micWatchdog: Timer?
+    private(set) var micRevivals = 0
+
     private var micCommitted = "", micPartial = ""
     private var sysCommitted = "", sysPartial = ""
 
@@ -638,6 +644,8 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startMic() {
         mark("startMic chamado")
+        wantsMic = true
+        startMicWatchdog()
         chunkMode ? micChunks.start() : micTranscriber.start()
         mark("micTranscriber.start retornou")
         micSource.start { [weak self] error in
@@ -648,7 +656,9 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mark("micSource.start retornou")
     }
 
-    private func stopMic() {
+    private func stopMic(reason: String = "pedido") {
+        mark("stopMic (\(reason))")
+        wantsMic = false
         micSource.stop()
         micTranscriber.stop()
         micChunks.stop()
@@ -671,6 +681,26 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sysTranscriber.stop()
         sysChunks.stop()
         sysCommitted = ""; sysPartial = ""
+    }
+
+    /// Religa o microfone se ele cair sozinho.
+    ///
+    /// Medido: com o áudio do sistema ligado, a fonte do microfone aparecia
+    /// `parado` sem que nenhuma rota de desligamento tivesse sido pedida. Em vez
+    /// de caçar a origem indefinidamente, o app passa a se recuperar — e conta
+    /// as recuperações, para a causa continuar visível.
+    private func startMicWatchdog() {
+        guard micWatchdog == nil else { return }
+        micWatchdog = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            guard let self, self.wantsMic, !self.micSource.isRunning else { return }
+            self.micRevivals += 1
+            self.mark("watchdog religou o microfone (\(self.micRevivals))")
+            self.micSource.start { [weak self] error in
+                if let error { self?.micTranscriber.reportExternal(error) }
+                self?.updateStatus()
+            }
+            if self.chunkMode { self.micChunks.start() } else { self.micTranscriber.start() }
+        }
     }
 
     // MARK: Texto
@@ -770,12 +800,12 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Para antes de subir. O `start` puro voltava "sem erro" quando a
             // fonte já se julgava ativa e na prática estava parada — o toggle
             // recuperava e o start não. Reiniciar sempre é idempotente.
-            stopMic()
+            stopMic(reason: "reinício do start")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.startMic()
             }
-        case "stop": stopMic()
-        case "toggle": micTranscriber.isListening ? stopMic() : startMic()
+        case "stop": stopMic(reason: "comando stop")
+        case "toggle": micTranscriber.isListening ? stopMic(reason: "toggle") : startMic()
         case "system":
             switch arg {
             case "on", "true", "1": systemAudio = true
@@ -868,7 +898,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MICROFONE
               transcrevendo: \(micTranscriber.isListening)
               fonte ativa: \(micSource.isRunning)  ·  passo: \(micSource.lastStep)
-              religadas: \(micSource.restarts)
+              religadas: \(micSource.restarts) · revividas pelo watchdog: \(micRevivals) · quer escutar: \(wantsMic)
               caracteres: \(micTranscriber.text.count)
               \(chunkMode ? micChunks.diagnostics : micTranscriber.diagnostics)
               erro: \(micTranscriber.lastError ?? "nenhum")
@@ -948,7 +978,8 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func quit() {
-        stopMic()
+        micWatchdog?.invalidate()
+        stopMic(reason: "quit")
         stopSystem()
         savePosition()
         NSApp.terminate(nil)
