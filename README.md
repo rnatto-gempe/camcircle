@@ -1,4 +1,10 @@
-# CamCircle
+# CamCircle + Teleprompter
+
+Dois overlays nativos para gravar a tela no macOS, sem instalar nada de terceiros:
+
+- **CamCircle** — sua webcam num círculo flutuante, sempre por cima
+- **Teleprompter** — roteiro rolando na tela, **invisível na gravação e no
+  compartilhamento de tela**
 
 Webcam num círculo flutuante, sempre por cima de tudo, para gravar a tela com seu rosto —
 tipo o overlay de câmera do Loom ou do mmhmm, mas nativo e sem instalar nada de terceiros.
@@ -155,6 +161,79 @@ O `build.sh` monta o `.app` na mão — `Info.plist` com `LSUIElement`,
 `NSCameraUsageDescription` e `NSMicrophoneUsageDescription` — e assina ad-hoc com
 `codesign -s -` para o macOS manter a permissão de câmera entre builds.
 
+## Teleprompter
+
+Um painel escuro com o roteiro rolando, que **não aparece em gravação nem em
+compartilhamento de tela**. Você lê, quem assiste não vê.
+
+```bash
+cam tp edit          # cria/abre o roteiro e o painel (recarrega ao salvar)
+cam tp time 3:00     # calcula a velocidade para terminar em 3 minutos
+cam tp play
+```
+
+### Comandos
+
+```bash
+cam tp                    # abre
+cam tp edit               # abre o roteiro no editor padrão
+cam tp load <arquivo>     # usa outro arquivo como roteiro
+cam tp paste              # carrega o texto do clipboard
+cam tp time 3:00          # velocidade derivada do tempo (aceita 3:00, 3m ou 180)
+cam tp speed 60           # velocidade fixa em px/s
+cam tp play | pause | toggle | top
+cam tp faster | slower
+cam tp font 40 | bigger | smaller
+cam tp mirror             # espelha, para vidro de teleprompter
+cam tp dimmer | brighter
+cam tp hide | show
+cam tp stop
+cam tp h                  # ajuda
+```
+
+### Atalhos globais
+
+Funcionam **com qualquer app em foco** — que é o ponto, já que durante a gravação você
+está no navegador, não no teleprompter. Usam `RegisterEventHotKey` (Carbon), que não
+exige permissão de Acessibilidade.
+
+| | |
+|---|---|
+| `⌥⌘Space` | play / pause |
+| `⌥⌘↑` `⌥⌘↓` | mais rápido / mais lento |
+| `⌥⌘R` | volta ao início |
+| `⌥⌘V` | carrega o texto do clipboard |
+| `⌥⌘T` | esconde / mostra o painel |
+
+Com o painel em foco: arrastar move, `option`+arrastar redimensiona, scroll rola à mão,
+espaço play/pause, `+`/`−` fonte, `[` `]` opacidade, setas ajustam velocidade e posição,
+`M` espelha, `R` reinicia, `Q` sai.
+
+### Modo tempo
+
+`cam tp time 3:00` não é um cronômetro — ele mede a altura real do texto renderizado
+(`NSLayoutManager.usedRect`) e resolve `velocidade = percurso ÷ tempo`. Mudar a fonte ou o
+tamanho da janela recalcula sozinho. O rodapé do painel mostra tempo restante, total e
+px/s. Mexer na velocidade à mão abandona o modo tempo.
+
+### Como a invisibilidade funciona
+
+```swift
+window.sharingType = .none
+```
+
+Uma linha. O macOS exclui a janela de todas as APIs de captura — `Cmd+Shift+5`,
+QuickTime, Zoom, Meet, OBS via ScreenCaptureKit. É o mesmo mecanismo que gerenciadores de
+senha usam para não vazar em screenshot.
+
+Verificado neste projeto com um teste controlado: com os dois apps abertos, o
+`screencapture` registra o CamCircle e **não** registra o Teleprompter. O teste cobre o
+caminho do CoreGraphics/ScreenCaptureKit, que é o mesmo usado por `Cmd+Shift+5` e pelos
+apps de videochamada.
+
+Óbvio, mas para não haver dúvida: isso esconde de captura *de software*. Uma câmera
+filmando o monitor continua vendo o texto.
+
 ## Segurança e privacidade
 
 O app é assinado com **hardened runtime** (`--options runtime`) e entitlements mínimas —
@@ -183,11 +262,15 @@ Outras decisões:
 ## Estrutura
 
 ```
-CamCircle.swift   o app inteiro
-build.sh          monta e assina o .app
-install.sh        build + instala + cria o comando cam
-cam               CLI de controle
+CamCircle.swift     o overlay de webcam
+Teleprompter.swift  o teleprompter invisível na captura
+build.sh            monta e assina os dois .app
+install.sh          build + instala + cria o comando cam
+cam                 CLI de controle (cam … e cam tp …)
 ```
+
+O `Teleprompter.app` não pede nenhuma permissão: não acessa câmera, microfone, rede nem
+disco protegido. É assinado com hardened runtime e sem entitlements.
 
 ## Licença
 

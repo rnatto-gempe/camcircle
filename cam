@@ -3,8 +3,11 @@
 set -euo pipefail
 
 APP="$HOME/Applications/CamCircle.app"
+TP_APP="$HOME/Applications/Teleprompter.app"
 DOMAIN="com.startse.camcircle"
 SRC="${CAMCIRCLE_SRC:-$HOME/Documents/Projects/camcircle}"
+TP_CONTROL="$HOME/.teleprompter/control"
+TP_SCRIPT="$HOME/Documents/teleprompter.txt"
 
 is_running() { pgrep -x CamCircle >/dev/null 2>&1; }
 
@@ -46,6 +49,109 @@ enable_all() {
     defaults write "$DOMAIN" voice     -bool "$voice" # anel reage à voz
 }
 
+tp_running() { pgrep -x Teleprompter >/dev/null 2>&1; }
+
+# Envia um comando para o teleprompter. O app observa este arquivo 4x por segundo.
+# O número aleatório na segunda linha garante que o mtime mude mesmo repetindo
+# o mesmo comando.
+tp_send() {
+    mkdir -p "$(dirname "$TP_CONTROL")"
+    printf '%s\n%s\n' "$*" "$RANDOM$RANDOM" > "$TP_CONTROL"
+}
+
+tp_start() {
+    if [ ! -d "$TP_APP" ]; then
+        echo "Teleprompter.app não encontrado. Rode:  cam build"
+        exit 1
+    fi
+    tp_running || open "$TP_APP"
+}
+
+# Garante o app rodando antes de mandar comando. Só espera se acabou de abrir,
+# para os comandos serem instantâneos com o app já aberto.
+tp_ready() {
+    if tp_running; then return; fi
+    tp_start
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        tp_running && break
+        sleep 0.2
+    done
+    sleep 0.5   # tempo de montar a janela e começar a ler o arquivo de controle
+}
+
+tp_usage() {
+    cat <<'TXT'
+cam tp — teleprompter invisível em gravação e compartilhamento de tela
+
+  cam tp                    abre o teleprompter
+  cam tp edit               abre o roteiro no editor padrão
+  cam tp load <arquivo>     usa outro arquivo como roteiro
+  cam tp paste              carrega o texto que está no clipboard
+  cam tp time 3:00          ajusta a velocidade para terminar nesse tempo
+                            (aceita 3:00, 3m ou 180)
+  cam tp speed 60           velocidade fixa em pixels por segundo
+  cam tp play | pause | toggle | top
+  cam tp faster | slower
+  cam tp font 40 | bigger | smaller
+  cam tp mirror             espelha (para vidro de teleprompter)
+  cam tp dimmer | brighter  opacidade
+  cam tp hide | show
+  cam tp stop               fecha
+
+Atalhos globais (funcionam com qualquer app em foco):
+  ⌥⌘Space   play / pause
+  ⌥⌘↑ ⌥⌘↓   mais rápido / mais lento
+  ⌥⌘R       volta ao início
+  ⌥⌘V       carrega o texto do clipboard
+  ⌥⌘T       esconde / mostra o painel
+
+Com o painel em foco: arrastar move, option+arrastar redimensiona,
+scroll rola à mão, espaço play/pause, +/− fonte, [ ] opacidade,
+setas ajustam, M espelha, R reinicia, Q sai.
+TXT
+}
+
+tp_dispatch() {
+    local sub="${1:-open}"
+    shift || true
+    case "$sub" in
+        ""|open|start)
+            tp_start
+            ;;
+        edit)
+            mkdir -p "$(dirname "$TP_SCRIPT")"
+            [ -f "$TP_SCRIPT" ] || printf 'Escreva seu roteiro aqui.\n\nEle recarrega sozinho quando você salvar.\n' > "$TP_SCRIPT"
+            tp_start
+            open -t "$TP_SCRIPT"
+            ;;
+        load)
+            [ $# -ge 1 ] || { echo "uso: cam tp load ~/roteiro.txt"; exit 1; }
+            tp_ready; tp_send "load $1"
+            ;;
+        time|speed|font)
+            [ $# -ge 1 ] || { echo "uso: cam tp $sub <valor>"; exit 1; }
+            tp_ready; tp_send "$sub $1"
+            ;;
+        play|pause|toggle|top|faster|slower|bigger|smaller|mirror|paste|reload|dimmer|brighter|hide|show)
+            tp_ready; tp_send "$sub"
+            ;;
+        stop|quit)
+            pkill -x Teleprompter 2>/dev/null && echo "Teleprompter fechado." || echo "Não estava rodando."
+            ;;
+        status)
+            if tp_running; then echo "rodando (pid $(pgrep -x Teleprompter))"; else echo "parado"; fi
+            ;;
+        h|-h|--help|help)
+            tp_usage
+            ;;
+        *)
+            echo "subcomando desconhecido: $sub"
+            tp_usage
+            exit 1
+            ;;
+    esac
+}
+
 usage() {
     cat <<'TXT'
 cam — webcam em círculo flutuante para gravação de tela
@@ -58,9 +164,14 @@ cam — webcam em círculo flutuante para gravação de tela
   cam restart        fecha e abre de novo
   cam zoom <valor>   define o zoom (1.0 a 3.0) e reabre — ex: cam zoom 1.5
   cam size <px>      define o diâmetro e reabre — ex: cam size 320
-  cam build          recompila o app a partir do fonte
+  cam build          recompila os apps a partir do fonte
   cam reset          apaga as preferências (tamanho, posição, efeitos)
   cam status         mostra se está rodando e as configurações atuais
+
+  cam tp             teleprompter invisível na gravação de tela
+  cam tp time 3:00   rola o roteiro para terminar em 3 minutos
+  cam tp paste       usa o texto do clipboard como roteiro
+  cam tp h           todos os comandos e atalhos do teleprompter
 
 Atalhos com o círculo em foco:
   arrastar move · scroll redimensiona · option+scroll dá zoom
@@ -74,6 +185,10 @@ TXT
 case "${1:-start}" in
     start|"")
         start_app
+        ;;
+    tp)
+        shift
+        tp_dispatch "$@"
         ;;
     all)
         stop_app
@@ -119,8 +234,10 @@ case "${1:-start}" in
         stop_app
         "$SRC/build.sh"
         mkdir -p "$HOME/Applications"
-        rm -rf "$APP"
+        pkill -x Teleprompter 2>/dev/null || true
+        rm -rf "$APP" "$TP_APP"
         cp -R "$SRC/CamCircle.app" "$APP"
+        cp -R "$SRC/Teleprompter.app" "$TP_APP"
         # Atualiza também este próprio script, senão ele fica defasado do fonte.
         if [ -f "$SRC/cam" ] && [ "$SRC/cam" != "$0" ]; then
             install -m 755 "$SRC/cam" "$0"

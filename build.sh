@@ -1,48 +1,14 @@
 #!/bin/bash
-# Compila o CamCircle.app (webcam em círculo flutuante) usando só o toolchain do macOS.
+# Compila CamCircle.app (webcam em círculo) e Teleprompter.app (invisível na captura)
+# usando só o toolchain do macOS.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-APP="$DIR/CamCircle.app"
 
-echo "==> Limpando build anterior"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-
-echo "==> Gerando Info.plist"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>            <string>CamCircle</string>
-    <key>CFBundleDisplayName</key>     <string>CamCircle</string>
-    <key>CFBundleExecutable</key>      <string>CamCircle</string>
-    <key>CFBundleIdentifier</key>      <string>com.startse.camcircle</string>
-    <key>CFBundlePackageType</key>     <string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key>         <string>1</string>
-    <key>LSMinimumSystemVersion</key>  <string>13.0</string>
-    <key>LSUIElement</key>             <true/>
-    <key>NSHighResolutionCapable</key> <true/>
-    <key>NSCameraUsageDescription</key>
-    <string>Mostrar sua webcam em um círculo flutuante para gravações de tela.</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Fazer o anel reagir à sua voz (opcional, só quando você liga o efeito).</string>
-</dict>
-</plist>
-PLIST
-
-echo "==> Compilando (swiftc)"
-swiftc -O \
-    -framework AppKit -framework AVFoundation \
-    "$DIR/CamCircle.swift" \
-    -o "$APP/Contents/MacOS/CamCircle"
-
-echo "==> Gerando entitlements"
-# Sob hardened runtime, o acesso a câmera e microfone precisa ser declarado.
-ENT="$(mktemp -t camcircle-ent).plist"
-cat > "$ENT" <<'PLIST'
+# Entitlements do CamCircle: sob hardened runtime, câmera e microfone precisam
+# ser declarados explicitamente.
+CAM_ENT="$(mktemp -t camcircle-ent).plist"
+cat > "$CAM_ENT" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -52,19 +18,69 @@ cat > "$ENT" <<'PLIST'
 </dict>
 </plist>
 PLIST
+trap 'rm -f "$CAM_ENT"' EXIT
 
-# Hardened runtime (--options runtime) faz o dyld ignorar DYLD_INSERT_LIBRARIES e
-# ativa library validation. Sem isso, qualquer processo rodando como o usuário
-# poderia injetar código no app e herdar a permissão de câmera já concedida.
-echo "==> Assinando (ad-hoc + hardened runtime)"
-codesign --force --options runtime --entitlements "$ENT" \
-    --sign - --identifier com.startse.camcircle "$APP"
-rm -f "$ENT"
+# build_app <nome> <fonte.swift> <bundle-id> <frameworks> [entitlements] [chaves-extra-do-plist]
+build_app() {
+    local name="$1" source="$2" bundle_id="$3" frameworks="$4" ent="${5:-}" extra="${6:-}"
+    local app="$DIR/$name.app"
 
-echo "==> Conferindo a assinatura"
-codesign --verify --strict --verbose=1 "$APP"
-codesign -dv "$APP" 2>&1 | grep -E "flags=" | sed 's/^/    /'
+    echo "==> $name: montando o bundle"
+    rm -rf "$app"
+    mkdir -p "$app/Contents/MacOS"
+
+    cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>              <string>$name</string>
+    <key>CFBundleDisplayName</key>       <string>$name</string>
+    <key>CFBundleExecutable</key>        <string>$name</string>
+    <key>CFBundleIdentifier</key>        <string>$bundle_id</string>
+    <key>CFBundlePackageType</key>       <string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key>           <string>1</string>
+    <key>LSMinimumSystemVersion</key>    <string>13.0</string>
+    <key>LSUIElement</key>               <true/>
+    <key>NSHighResolutionCapable</key>   <true/>
+$extra
+</dict>
+</plist>
+PLIST
+
+    echo "==> $name: compilando"
+    # shellcheck disable=SC2086
+    swiftc -O $frameworks "$DIR/$source" -o "$app/Contents/MacOS/$name"
+
+    # Hardened runtime (--options runtime) faz o dyld ignorar DYLD_INSERT_LIBRARIES
+    # e ativa library validation. Sem isso, qualquer processo do usuário poderia
+    # injetar código e herdar as permissões já concedidas ao app.
+    echo "==> $name: assinando (ad-hoc + hardened runtime)"
+    if [ -n "$ent" ]; then
+        codesign --force --options runtime --entitlements "$ent" \
+            --sign - --identifier "$bundle_id" "$app"
+    else
+        codesign --force --options runtime --sign - --identifier "$bundle_id" "$app"
+    fi
+    codesign --verify --strict "$app"
+    codesign -dv "$app" 2>&1 | grep -E "flags=" | sed 's/^/    /'
+}
+
+build_app CamCircle CamCircle.swift com.startse.camcircle \
+    "-framework AppKit -framework AVFoundation" \
+    "$CAM_ENT" \
+    '    <key>NSCameraUsageDescription</key>
+    <string>Mostrar sua webcam em um círculo flutuante para gravações de tela.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Fazer o anel reagir à sua voz (opcional, só quando você liga o efeito).</string>'
+
+# O teleprompter não acessa câmera, microfone, disco protegido nem rede,
+# então não precisa de nenhuma entitlement.
+build_app Teleprompter Teleprompter.swift com.startse.teleprompter \
+    "-framework AppKit -framework Carbon"
 
 echo
-echo "Pronto: $APP"
-echo "Rode com:  open '$APP'"
+echo "Pronto:"
+echo "  $DIR/CamCircle.app"
+echo "  $DIR/Teleprompter.app"
