@@ -168,6 +168,10 @@ tp_dispatch() {
                 *) echo "Modo do mouse alternado (⌥⌘L faz o mesmo).";;
             esac
             ;;
+        camera|cam)
+            tp_ready; tp_send "camera"
+            echo "Alternando o círculo da câmera (⌃⌥⌘C faz o mesmo)."
+            ;;
         play|pause|toggle|top|faster|slower|bigger|smaller|mirror|paste|reload|dimmer|brighter|hide|show)
             tp_ready; tp_send "$sub"
             ;;
@@ -204,10 +208,16 @@ cam — webcam em círculo flutuante para gravação de tela
   cam reset          apaga as preferências (tamanho, posição, efeitos)
   cam status         mostra se está rodando e as configurações atuais
 
+  cam both           abre os dois de uma vez
   cam tp             teleprompter invisível na gravação de tela
   cam tp time 3:00   rola o roteiro para terminar em 3 minutos
   cam tp paste       usa o texto do clipboard como roteiro
+  cam tp camera      abre/fecha o círculo (mesmo que ⌃⌥⌘C)
   cam tp h           todos os comandos e atalhos do teleprompter
+
+Um app abre o outro sem terminal:
+  ⌃⌥⌘P  do círculo (ou de qualquer app) abre/fecha o teleprompter
+  ⌃⌥⌘C  do teleprompter abre/fecha o círculo
 
 Atalhos com o círculo em foco:
   arrastar move · scroll redimensiona · option+scroll dá zoom
@@ -225,6 +235,11 @@ case "${1:-start}" in
     tp)
         shift
         tp_dispatch "$@"
+        ;;
+    both)
+        start_app
+        tp_start
+        echo "Círculo e teleprompter abertos. ⌃⌥⌘P e ⌃⌥⌘C alternam um pelo outro."
         ;;
     all)
         stop_app

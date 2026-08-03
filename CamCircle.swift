@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Carbon.HIToolbox
 import CoreImage
 import CoreMedia
 
@@ -789,6 +790,7 @@ final class HelpPanel {
         ("M", "espelhar"),
         ("C", "trocar de câmera"),
         ("clique direito", "menu completo"),
+        ("⌃⌥⌘P", "abre/fecha o teleprompter (funciona de qualquer app)"),
         ("H", "abrir/fechar esta lista"),
         ("Q", "sair"),
     ]
@@ -899,12 +901,16 @@ final class HelpPanel {
 
 final class Overlay: NSObject, NSApplicationDelegate {
 
+    static weak var shared: Overlay?
+
     private var window: OverlayWindow!
     private var cam: CameraCircleView!
     private let defaults = UserDefaults.standard
     private let help = HelpPanel()
+    private var hotKey: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Overlay.shared = self
         defaults.register(defaults: [
             Pref.size: 260.0,
             Pref.mirror: true,
@@ -961,6 +967,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         cam.playIntro()
+        installTeleprompterHotKey()
 
         AVCaptureDevice.requestAccess(for: .video) { granted in
             if !granted { DispatchQueue.main.async { self.showNoPermissionAlert() } }
@@ -1110,6 +1117,33 @@ final class Overlay: NSObject, NSApplicationDelegate {
     func toggleHelp() { help.toggle(relativeTo: window) }
     func hideHelp() { help.hide() }
 
+    // MARK: Ponte com o teleprompter
+
+    /// ⌃⌥⌘P abre/fecha o teleprompter de qualquer app. Só este atalho é global
+    /// aqui — o resto do CamCircle é local, porque o círculo é fácil de clicar.
+    /// ⌃⌥⌘ de propósito: ⌥⌘P seria sequestrado do sistema (Configurar página).
+    private func installTeleprompterHotKey() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                 eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
+            DispatchQueue.main.async { Overlay.shared?.toggleTeleprompter() }
+            return noErr
+        }, 1, &spec, nil, nil)
+
+        let id = EventHotKeyID(signature: OSType(0x43_41_4D_43), id: 1)   // 'CAMC'
+        RegisterEventHotKey(UInt32(kVK_ANSI_P),
+                            UInt32(controlKey | optionKey | cmdKey),
+                            id, GetApplicationEventTarget(), 0, &hotKey)
+    }
+
+    func toggleTeleprompter() {
+        Companion.toggle(name: "Teleprompter", bundleID: "com.startse.teleprompter")
+    }
+
+    var isTeleprompterRunning: Bool {
+        Companion.isRunning(bundleID: "com.startse.teleprompter")
+    }
+
     func quit() {
         help.hide()
         savePosition()
@@ -1163,6 +1197,10 @@ final class Overlay: NSObject, NSApplicationDelegate {
         add(menu, "Espelhar imagem", #selector(menuMirror), "m", on: cam.mirrored)
 
         menu.addItem(.separator())
+        // Mostra ⌃⌥⌘P, não "P" — no círculo o P é o modo de mira.
+        let tp = add(menu, isTeleprompterRunning ? "Fechar teleprompter" : "Abrir teleprompter",
+                     #selector(menuTeleprompter), "p")
+        tp.keyEquivalentModifierMask = [.control, .option, .command]
         add(menu, "Atalhos…", #selector(menuHelp), "h", on: help.isVisible)
         add(menu, "Sair", #selector(menuQuit), "q")
         return menu
@@ -1197,6 +1235,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
     @objc private func menuFraming() { toggleFraming() }
     @objc private func menuMirror() { toggleMirror() }
     @objc private func menuHelp() { toggleHelp() }
+    @objc private func menuTeleprompter() { toggleTeleprompter() }
     @objc private func menuQuit() { quit() }
 }
 
@@ -1328,8 +1367,17 @@ private extension CGFloat {
 
 // MARK: - main
 
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-let overlay = Overlay()
-app.delegate = overlay
-app.run()
+// @main em vez de código no topo do arquivo: com mais de um fonte no módulo
+// (Companion.swift), o Swift só aceita top-level code em main.swift.
+@main
+struct CamCircleApp {
+    /// Retém o delegate — NSApplication.delegate é weak.
+    static let overlay = Overlay()
+
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.delegate = overlay
+        app.run()
+    }
+}

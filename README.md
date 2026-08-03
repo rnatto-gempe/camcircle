@@ -62,6 +62,7 @@ cam size 320       # define o diâmetro em px
 cam build          # recompila do fonte e reinstala
 cam reset          # apaga as preferências
 cam status         # mostra se está rodando e as configurações
+cam both           # abre o círculo e o teleprompter
 cam h              # ajuda
 ```
 
@@ -90,6 +91,7 @@ Funcionam com o círculo em foco (clique nele uma vez). Depois de clicar em outr
 | Enquadramento automático (Center Stage) | `A` |
 | Espelhar imagem | `M` |
 | Trocar de câmera | `C` |
+| Abrir/fechar o teleprompter | `⌃⌥⌘P` (funciona de qualquer app) |
 | Menu completo | clique direito |
 | Sair | `Q` ou `Esc` |
 
@@ -260,6 +262,28 @@ apps de videochamada.
 
 Óbvio, mas para não haver dúvida: isso esconde de captura *de software*. Uma câmera
 filmando o monitor continua vendo o texto.
+
+## Um app abre o outro
+
+Cada app registra o atalho global que controla **o outro** — assim não há disputa pela
+mesma combinação, e você nunca precisa voltar ao terminal:
+
+| | |
+|---|---|
+| `⌃⌥⌘P` | abre / fecha o **teleprompter** (de qualquer app) |
+| `⌃⌥⌘C` | abre / fecha o **círculo da câmera** (de qualquer app) |
+
+No círculo, o clique direito também traz "Abrir teleprompter". Pelo terminal:
+
+```bash
+cam both          # abre os dois
+cam tp camera     # do teleprompter, alterna o círculo
+```
+
+O `Companion.swift` é compilado nos dois binários. Ele procura o bundle irmão primeiro ao
+lado do app que está rodando — o que cobre tanto os dois instalados em `~/Applications`
+quanto os dois no diretório do fonte — e depois em `~/Applications` e `/Applications`.
+Abre com `activates = false`, para não tirar o foco do app que você está usando.
 
 ## Segurança e privacidade
 

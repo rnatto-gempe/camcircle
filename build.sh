@@ -50,8 +50,10 @@ $extra
 PLIST
 
     echo "==> $name: compilando"
+    # Companion.swift é a ponte entre os dois apps e vai nos dois binários.
     # shellcheck disable=SC2086
-    swiftc -O $frameworks "$DIR/$source" -o "$app/Contents/MacOS/$name"
+    swiftc -O $frameworks "$DIR/$source" "$DIR/Companion.swift" \
+        -o "$app/Contents/MacOS/$name"
 
     # Hardened runtime (--options runtime) faz o dyld ignorar DYLD_INSERT_LIBRARIES
     # e ativa library validation. Sem isso, qualquer processo do usuário poderia
@@ -68,7 +70,7 @@ PLIST
 }
 
 build_app CamCircle CamCircle.swift com.startse.camcircle \
-    "-framework AppKit -framework AVFoundation" \
+    "-framework AppKit -framework AVFoundation -framework Carbon" \
     "$CAM_ENT" \
     '    <key>NSCameraUsageDescription</key>
     <string>Mostrar sua webcam em um círculo flutuante para gravações de tela.</string>

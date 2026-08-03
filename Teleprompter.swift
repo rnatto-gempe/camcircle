@@ -135,6 +135,10 @@ final class HelpPanel {
         ("arrastar", "move (com o mouse ativo)"),
         ("⌥ arrastar", "redimensiona (com o mouse ativo)"),
 
+        ("", "O OUTRO APP"),
+        ("⌃⌥⌘C", "abre / fecha o círculo da câmera"),
+        ("cam", "abre o círculo pelo terminal"),
+
         ("", "MOUSE E JANELA"),
         ("⌃⌥⌘L", "cliques atravessam o painel (liga/desliga)"),
         ("⌃⌥⌘T", "esconde / mostra o painel"),
@@ -549,6 +553,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
         case passThrough = 7
         case moveUp = 8, moveDown = 9, moveLeft = 10, moveRight = 11
         case dimmer = 12, brighter = 13, help = 14
+        case camera = 15
     }
 
     private func installHotKeys() {
@@ -582,6 +587,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
         register(kVK_ANSI_LeftBracket, mods, .dimmer, "⌃⌥⌘[")
         register(kVK_ANSI_RightBracket, mods, .brighter, "⌃⌥⌘]")
         register(kVK_ANSI_Slash, mods, .help, "⌃⌥⌘/")
+        register(kVK_ANSI_C, mods, .camera, "⌃⌥⌘C")
 
         // Mover pelo teclado: no modo atravessa-cliques não há como arrastar.
         let moveMods = UInt32(controlKey | optionKey | cmdKey | shiftKey)
@@ -617,6 +623,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
         case .dimmer: setOpacity(window.alphaValue - 0.1)
         case .brighter: setOpacity(window.alphaValue + 0.1)
         case .help: help.toggle(relativeTo: window)
+        case .camera: Companion.toggle(name: "CamCircle", bundleID: "com.startse.camcircle")
         case .moveUp: move(dx: 0, dy: 24)
         case .moveDown: move(dx: 0, dy: -24)
         case .moveLeft: move(dx: -24, dy: 0)
@@ -669,6 +676,8 @@ final class Prompter: NSObject, NSApplicationDelegate {
                 setOpacity(value > 1 ? CGFloat(value / 100) : CGFloat(value))
             }
         case "help", "keys": help.toggle(relativeTo: window)
+        case "camera", "cam":
+            Companion.toggle(name: "CamCircle", bundleID: "com.startse.camcircle")
         case "hotkeys":
             let on = !(arg == "off" || arg == "false" || arg == "0")
             defaults.set(on, forKey: Pref.hotkeys)
@@ -845,8 +854,17 @@ private extension CGFloat {
 
 // MARK: - main
 
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-let prompter = Prompter()
-app.delegate = prompter
-app.run()
+// @main em vez de código no topo do arquivo: com mais de um fonte no módulo
+// (Companion.swift), o Swift só aceita top-level code em main.swift.
+@main
+struct TeleprompterApp {
+    /// Retém o delegate — NSApplication.delegate é weak.
+    static let prompter = Prompter()
+
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.delegate = prompter
+        app.run()
+    }
+}
