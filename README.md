@@ -394,7 +394,25 @@ tiradas deles não valem**. Antes de seguir investigando o áudio, é preciso co
 gravação de diagnóstico — fechar o arquivo corretamente — e só então comparar o WAV
 capturado com o original.
 
-Ligar com `cam cc system on` ou `⌃⌥⌘H`. A coluna aparece, o tap roda, e o texto não vem.
+**E ligar o áudio do sistema quebra o microfone.** Medido com a saída nos alto-falantes,
+para o microfone ter o que ouvir:
+
+```
+sistema DESLIGADO → microfone: 12 caracteres   funciona
+sistema LIGADO    → microfone:  0 caracteres   quebra
+                  → sistema:    0 caracteres
+```
+
+A causa é o aggregate device: ele inclui o dispositivo de saída físico como sub-device (para
+servir de referência de clock) e isso derruba a entrada do `AVAudioEngine`. As duas fontes
+não coexistem na implementação atual.
+
+Por isso o áudio do sistema vem **desligado por padrão**, e o rodapé avisa quando estiver
+ligado. Enquanto não for corrigido, `cam cc` sozinho — só microfone — é o modo utilizável.
+
+O conserto tem dois caminhos a testar: montar o aggregate **só com o tap**, sem o
+dispositivo de saída como sub-device, ou alimentar as duas transcrições de um único
+`AVAudioEngine`, com o tap entrando como nó em vez de dispositivo paralelo.
 
 ### Por que um app separado
 

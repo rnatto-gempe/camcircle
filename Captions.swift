@@ -607,7 +607,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatus() {
         var line = micTranscriber.isListening ? "● você" : "❙❙ você"
         line += systemAudio
-            ? (sysTranscriber.isListening ? "  ·  ● sistema" : "  ·  ⚠ sistema")
+            ? "  ·  ⚠ sistema ligado DESATIVA o microfone (⌃⌥⌘H)"
             : "  ·  sistema desligado (⌃⌥⌘H)"
         line += "  ·  \(micTranscriber.localeID)"
         line += passThrough ? "  ·  ⇢ cliques passam" : ""
