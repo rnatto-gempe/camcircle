@@ -161,6 +161,9 @@ final class CameraCircleView: NSView {
     private let rim = CAShapeLayer()
     private let featherMask = CAGradientLayer()
     private let crosshair = CAShapeLayer()
+    private let closeButton = CALayer()
+    private let closeDisc = CAShapeLayer()
+    private let closeGlyph = CAShapeLayer()
 
     private var currentInput: AVCaptureDeviceInput?
     private let voiceMeter = VoiceMeter()
@@ -232,6 +235,17 @@ final class CameraCircleView: NSView {
     var aiming = false {
         didSet { crosshair.isHidden = !aiming }
     }
+
+    /// Mouse sobre o círculo: mostra o X de fechar.
+    var hovering = false {
+        didSet { animateCloseButton() }
+    }
+
+    /// Área clicável do X, em coordenadas da view.
+    private(set) var closeButtonFrame: CGRect = .zero
+
+    /// Área onde o hover é considerado (só o círculo visível, não o respiro).
+    var hoverRect: CGRect { circleRect }
 
     private var animatePan = false
     private var videoAspect: CGFloat = 16.0 / 9.0
@@ -335,6 +349,22 @@ final class CameraCircleView: NSView {
         crosshair.shadowOffset = .zero
         crosshair.isHidden = true
 
+        // Botão de fechar: disco escuro translúcido com um X, aparece no hover.
+        closeDisc.fillColor = NSColor.black.withAlphaComponent(0.62).cgColor
+        closeDisc.strokeColor = NSColor.white.withAlphaComponent(0.3).cgColor
+        closeDisc.lineWidth = 1
+        closeDisc.shadowColor = NSColor.black.cgColor
+        closeDisc.shadowOpacity = 0.5
+        closeDisc.shadowRadius = 4
+        closeDisc.shadowOffset = CGSize(width: 0, height: -1)
+        closeGlyph.strokeColor = NSColor.white.withAlphaComponent(0.95).cgColor
+        closeGlyph.fillColor = NSColor.clear.cgColor
+        closeGlyph.lineCap = .round
+        closeButton.addSublayer(closeDisc)
+        closeButton.addSublayer(closeGlyph)
+        closeButton.opacity = 0
+        closeButton.transform = CATransform3DMakeScale(0.85, 0.85, 1)
+
         clip.addSublayer(preview)
         clip.addSublayer(vignette)
         clip.addSublayer(crosshair)
@@ -342,6 +372,7 @@ final class CameraCircleView: NSView {
         container.addSublayer(glow)
         container.addSublayer(ringHolder)
         container.addSublayer(rim)
+        container.addSublayer(closeButton)
         layer?.addSublayer(container)
 
         session.sessionPreset = .high
@@ -431,6 +462,8 @@ final class CameraCircleView: NSView {
                           cornerWidth: max(0, radius - width - 0.5),
                           cornerHeight: max(0, radius - width - 0.5), transform: nil)
 
+        layoutCloseButton(in: rect)
+
         CATransaction.commit()
 
         // Zoom/pan: a camada de vídeo é maior que o clip e desliza dentro dele.
@@ -451,6 +484,50 @@ final class CameraCircleView: NSView {
 
         applyShadow()
         applyTheme()
+    }
+
+    /// X de fechar, encostado na diagonal superior direita do círculo.
+    private func layoutCloseButton(in rect: CGRect) {
+        let size = max(18, diameter * 0.15)
+        // 0.72 do raio na diagonal: fica sobre o anel tanto no círculo
+        // quanto no squircle, e um pouco dentro no formato quadrado.
+        let k: CGFloat = 0.72
+        let center = CGPoint(x: rect.midX + rect.width / 2 * k,
+                             y: rect.midY + rect.height / 2 * k)
+        let frame = CGRect(x: center.x - size / 2, y: center.y - size / 2,
+                           width: size, height: size)
+        closeButtonFrame = frame
+        closeButton.frame = frame
+
+        let local = CGRect(origin: .zero, size: frame.size)
+        closeDisc.frame = local
+        closeDisc.path = CGPath(ellipseIn: local.insetBy(dx: 0.5, dy: 0.5), transform: nil)
+
+        let inset = size * 0.32
+        let glyph = CGMutablePath()
+        glyph.move(to: CGPoint(x: inset, y: inset))
+        glyph.addLine(to: CGPoint(x: size - inset, y: size - inset))
+        glyph.move(to: CGPoint(x: size - inset, y: inset))
+        glyph.addLine(to: CGPoint(x: inset, y: size - inset))
+        closeGlyph.frame = local
+        closeGlyph.path = glyph
+        closeGlyph.lineWidth = max(1.5, size * 0.11)
+    }
+
+    private func animateCloseButton() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(hovering ? 0.16 : 0.14)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        closeButton.opacity = hovering ? 1 : 0
+        closeButton.transform = hovering
+            ? CATransform3DIdentity
+            : CATransform3DMakeScale(0.85, 0.85, 1)
+        CATransaction.commit()
+    }
+
+    /// O ponto está sobre o X? (com uma folga para facilitar o clique)
+    func closeButtonHit(_ point: CGPoint) -> Bool {
+        hovering && closeButtonFrame.insetBy(dx: -4, dy: -4).contains(point)
     }
 
     /// Alvo central usado no modo de mira.
@@ -690,6 +767,7 @@ final class HelpPanel {
     private var window: NSWindow?
 
     private static let items: [(String, String)] = [
+        ("passar o mouse", "mostra o X de fechar"),
         ("arrastar", "mover o círculo"),
         ("scroll", "tamanho"),
         ("⌥ scroll", "zoom do enquadramento"),
@@ -1025,6 +1103,9 @@ final class Overlay: NSObject, NSApplicationDelegate {
     func toggleShadow() { cam.shadowed.toggle() }
     func cycleCamera() { cam.cycleCamera() }
 
+    func setHovering(_ on: Bool) { cam.hovering = on }
+    func closeButtonHit(_ point: CGPoint) -> Bool { cam.closeButtonHit(point) }
+
     var isHelpVisible: Bool { help.isVisible }
     func toggleHelp() { help.toggle(relativeTo: window) }
     func hideHelp() { help.hide() }
@@ -1124,9 +1205,12 @@ final class Overlay: NSObject, NSApplicationDelegate {
 final class HostView: NSView {
 
     private weak var overlay: Overlay?
+    private weak var cam: CameraCircleView?
+    private var hoverArea: NSTrackingArea?
 
     init(overlay: Overlay, cam: CameraCircleView) {
         self.overlay = overlay
+        self.cam = cam
         super.init(frame: cam.frame)
         autoresizesSubviews = true
         cam.autoresizingMask = [.width, .height]
@@ -1137,6 +1221,27 @@ final class HostView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Hover só sobre o círculo visível, e com `activeAlways` para funcionar
+    /// mesmo com outro app em foco.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let rect = cam?.hoverRect ?? bounds
+        let area = NSTrackingArea(rect: rect,
+                                  options: [.mouseEnteredAndExited, .activeAlways],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        overlay?.setHovering(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        overlay?.setHovering(false)
+    }
 
     /// Scroll = tamanho. Option + scroll = zoom do enquadramento.
     override func scrollWheel(with event: NSEvent) {
@@ -1160,6 +1265,11 @@ final class HostView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let overlay else { return }
         let point = convert(event.locationInWindow, from: nil)
+
+        if overlay.closeButtonHit(point) {
+            overlay.quit()
+            return
+        }
 
         if overlay.isAiming || event.modifierFlags.contains(.option) {
             overlay.centerOn(point: point)

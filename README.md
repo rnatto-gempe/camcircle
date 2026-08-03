@@ -65,6 +65,7 @@ Funcionam com o círculo em foco (clique nele uma vez). Depois de clicar em outr
 
 | Ação | Como |
 |---|---|
+| Fechar com o mouse | passe o mouse sobre o círculo → clique no **X** |
 | Ver os atalhos | `H` |
 | Mover | arrastar (encaixa no canto se soltar perto) |
 | Redimensionar | scroll / pinça, `+` `-`, ou `1` `2` `3` |
