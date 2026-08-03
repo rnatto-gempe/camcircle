@@ -185,10 +185,14 @@ cam tp play | pause | toggle | top
 cam tp faster | slower
 cam tp font 40 | bigger | smaller
 cam tp mirror             # espelha, para vidro de teleprompter
-cam tp dimmer | brighter
+cam tp opacity 0.6        # opacidade (0.25 a 1, ou 25 a 100)
+cam tp dimmer | brighter  # opacidade em passos
+cam tp pass on|off        # cliques atravessam o painel
+cam tp keys               # mostra a ajuda na tela
+cam tp hotkeys off        # desliga os atalhos globais
 cam tp hide | show
 cam tp stop
-cam tp h                  # ajuda
+cam tp h                  # ajuda no terminal
 ```
 
 ### Atalhos globais
@@ -197,17 +201,40 @@ Funcionam **com qualquer app em foco** — que é o ponto, já que durante a gra
 está no navegador, não no teleprompter. Usam `RegisterEventHotKey` (Carbon), que não
 exige permissão de Acessibilidade.
 
+Todos em **`⌃⌥⌘`** (control+option+command), de propósito: um atalho registrado pelo
+Carbon tem precedência sobre o do sistema, então usar `⌥⌘` sequestraria globalmente coisas
+como "Mover item aqui" (`⌥⌘V` no Finder) e a busca do Finder (`⌥⌘Space`). `⌃⌥⌘` é a
+combinação que o macOS praticamente não reivindica.
+
 | | |
 |---|---|
-| `⌥⌘Space` | play / pause |
-| `⌥⌘↑` `⌥⌘↓` | mais rápido / mais lento |
-| `⌥⌘R` | volta ao início |
-| `⌥⌘V` | carrega o texto do clipboard |
-| `⌥⌘T` | esconde / mostra o painel |
+| `⌃⌥⌘Space` | play / pause |
+| `⌃⌥⌘↑` `⌃⌥⌘↓` | mais rápido / mais lento |
+| `⌃⌥⌘R` | volta ao início |
+| `⌃⌥⌘V` | carrega o texto do clipboard |
+| `⌃⌥⌘[` `⌃⌥⌘]` | menos / mais opaco |
+| `⌃⌥⌘L` | cliques atravessam o painel |
+| `⌃⌥⌘T` | esconde / mostra o painel |
+| `⌃⌥⌘/` | abre e fecha a ajuda na tela |
+| `⌃⌥⌘⇧` setas | move o painel pelo teclado |
 
-Com o painel em foco: arrastar move, `option`+arrastar redimensiona, scroll rola à mão,
-espaço play/pause, `+`/`−` fonte, `[` `]` opacidade, setas ajustam velocidade e posição,
-`M` espelha, `R` reinicia, `Q` sai.
+Se algum atalho já estiver tomado por outro app, o rodapé do painel mostra
+`⚠ em conflito` com a combinação — em vez de o atalho simplesmente não funcionar sem
+explicação. Para desligar todos: `cam tp hotkeys off`.
+
+Com o mouse ativo: arrastar move, `option`+arrastar redimensiona, scroll rola à mão,
+espaço play/pause, `H` ajuda, `+`/`−` fonte, `[` `]` opacidade, setas ajustam velocidade
+e posição, `M` espelha, `R` reinicia, `Q` sai.
+
+### Cliques atravessando o painel
+
+`⌃⌥⌘L` faz o painel ignorar o mouse por completo (`ignoresMouseEvents`), então você clica
+em botões, diálogos e menus que estão **atrás** dele. A borda fica tracejada em azul para
+você nunca ficar sem entender por que o painel parou de responder ao mouse.
+
+O toggle é atalho global por necessidade: com os cliques atravessando, não haveria como
+clicar no painel para desligar. `⌃⌥⌘⇧`+setas move o painel nesse modo, e `cam tp pass off`
+é a saída pelo terminal.
 
 ### Modo tempo
 

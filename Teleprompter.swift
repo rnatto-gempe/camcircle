@@ -11,6 +11,8 @@ private enum Pref {
     static let opacity = "tpOpacity"
     static let mirrored = "tpMirrored"
     static let script = "tpScript"
+    static let passThrough = "tpPassThrough"
+    static let hotkeys = "tpHotkeys"
 }
 
 private let controlPath = NSString(string: "~/.teleprompter/control").expandingTildeInPath
@@ -32,6 +34,7 @@ final class Backdrop: NSView {
 
     private let fade = CAGradientLayer()
     private let readingLine = CAShapeLayer()
+    private let passOutline = CAShapeLayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -55,9 +58,26 @@ final class Backdrop: NSView {
         readingLine.strokeColor = NSColor(srgbRed: 0.42, green: 0.78, blue: 0.98, alpha: 0.45).cgColor
         readingLine.lineWidth = 1
         layer?.addSublayer(readingLine)
+
+        // Contorno tracejado: sinaliza que os cliques estão atravessando o painel.
+        passOutline.fillColor = NSColor.clear.cgColor
+        passOutline.strokeColor = NSColor(srgbRed: 0.42, green: 0.78, blue: 0.98, alpha: 0.75).cgColor
+        passOutline.lineWidth = 2
+        passOutline.lineDashPattern = [6, 4]
+        passOutline.isHidden = true
+        layer?.addSublayer(passOutline)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// No modo atravessa-cliques a borda fica tracejada, para você nunca ficar
+    /// sem saber por que o painel não responde ao mouse.
+    func setPassThrough(_ on: Bool) {
+        passOutline.isHidden = !on
+        layer?.borderColor = on
+            ? NSColor.clear.cgColor
+            : NSColor.white.withAlphaComponent(0.12).cgColor
+    }
 
     /// O fade vai na view de conteúdo, não na backdrop — senão o fundo e a
     /// borda também sumiriam nas pontas.
@@ -74,6 +94,155 @@ final class Backdrop: NSView {
         path.move(to: CGPoint(x: 16, y: y))
         path.addLine(to: CGPoint(x: bounds.width - 16, y: y))
         readingLine.path = path
+
+        passOutline.frame = bounds
+        passOutline.path = CGPath(roundedRect: bounds.insetBy(dx: 1, dy: 1),
+                                  cornerWidth: 13, cornerHeight: 13, transform: nil)
+    }
+}
+
+// MARK: - Painel de ajuda
+
+/// Cartão com os comandos. Também invisível na captura, e nunca vira janela ativa.
+final class HelpPanel {
+
+    private var window: NSWindow?
+
+    /// Chave vazia = título de seção.
+    private static let items: [(String, String)] = [
+        ("", "TEXTO"),
+        ("⌃⌥⌘V", "carrega o texto do clipboard"),
+        ("cam tp edit", "abre o roteiro no editor (recarrega ao salvar)"),
+        ("cam tp load ARQ", "usa outro arquivo como roteiro"),
+        ("cam tp paste", "mesmo que ⌃⌥⌘V"),
+
+        ("", "VELOCIDADE"),
+        ("cam tp time 3:00", "calcula a velocidade para durar esse tempo"),
+        ("cam tp speed 60", "velocidade fixa em px/s"),
+        ("⌃⌥⌘Space", "play / pause"),
+        ("⌃⌥⌘↑  ⌃⌥⌘↓", "mais rápido / mais lento"),
+        ("⌃⌥⌘R", "volta ao início"),
+
+        ("", "APARÊNCIA"),
+        ("⌃⌥⌘[  ⌃⌥⌘]", "menos / mais opaco"),
+        ("cam tp opacity 0.6", "opacidade direta (0.25 a 1)"),
+        ("+  −", "fonte (com o mouse ativo)"),
+        ("cam tp font 40", "tamanho da fonte"),
+        ("M", "espelhar, para vidro de teleprompter"),
+
+        ("", "POSIÇÃO"),
+        ("⌃⌥⌘⇧ setas", "move o painel pelo teclado"),
+        ("arrastar", "move (com o mouse ativo)"),
+        ("⌥ arrastar", "redimensiona (com o mouse ativo)"),
+
+        ("", "MOUSE E JANELA"),
+        ("⌃⌥⌘L", "cliques atravessam o painel (liga/desliga)"),
+        ("⌃⌥⌘T", "esconde / mostra o painel"),
+        ("⌃⌥⌘/", "abre e fecha esta ajuda"),
+        ("Q", "sair"),
+    ]
+
+    var isVisible: Bool { window != nil }
+
+    func toggle(relativeTo host: NSWindow) {
+        isVisible ? hide() : show(relativeTo: host)
+    }
+
+    func hide() {
+        window?.orderOut(nil)
+        window = nil
+    }
+
+    private func show(relativeTo host: NSWindow) {
+        let text = NSTextField(labelWithAttributedString: Self.list())
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        let backdrop = NSVisualEffectView()
+        backdrop.material = .hudWindow
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .active
+        backdrop.wantsLayer = true
+        backdrop.layer?.cornerRadius = 14
+        backdrop.layer?.masksToBounds = true
+        backdrop.addSubview(text)
+
+        let pad: CGFloat = 20
+        NSLayoutConstraint.activate([
+            text.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor, constant: pad),
+            text.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor, constant: -pad),
+            text.topAnchor.constraint(equalTo: backdrop.topAnchor, constant: pad),
+            text.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor, constant: -pad),
+        ])
+
+        let size = text.intrinsicContentSize
+        let frame = NSRect(x: 0, y: 0, width: size.width + pad * 2, height: size.height + pad * 2)
+
+        let panel = NSWindow(contentRect: frame, styleMask: [.borderless],
+                             backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = host.level
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.sharingType = .none          // a ajuda também não entra na gravação
+        panel.contentView = backdrop
+        panel.setFrame(Self.position(frame, near: host), display: false)
+
+        host.addChildWindow(panel, ordered: .above)
+        panel.orderFront(nil)
+        window = panel
+    }
+
+    private static func position(_ frame: NSRect, near host: NSWindow) -> NSRect {
+        let hostFrame = host.frame
+        let visible = (host.screen ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let gap: CGFloat = 10
+
+        // Abaixo do painel; se não couber, acima.
+        var y = hostFrame.minY - frame.height - gap
+        if y < visible.minY { y = hostFrame.maxY + gap }
+        y = min(max(y, visible.minY + gap), visible.maxY - frame.height - gap)
+
+        var x = hostFrame.midX - frame.width / 2
+        x = min(max(x, visible.minX + gap), visible.maxX - frame.width - gap)
+        return NSRect(x: x, y: y, width: frame.width, height: frame.height)
+    }
+
+    private static func list() -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        result.append(NSAttributedString(string: "Teleprompter · comandos\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]))
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.tabStops = [NSTextTab(textAlignment: .left, location: 150, options: [:])]
+        paragraph.lineSpacing = 3
+
+        let keyFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
+        let bodyFont = NSFont.systemFont(ofSize: 11.5)
+
+        for (key, action) in items {
+            if key.isEmpty {
+                result.append(NSAttributedString(string: "\n" + action + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 9.5, weight: .semibold),
+                    .foregroundColor: NSColor(srgbRed: 0.42, green: 0.78, blue: 0.98, alpha: 0.95),
+                    .kern: 1.2,
+                ]))
+                continue
+            }
+            let line = NSMutableAttributedString(string: key, attributes: [
+                .font: keyFont, .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
+            ])
+            line.append(NSAttributedString(string: "\t" + action + "\n", attributes: [
+                .font: bodyFont,
+                .foregroundColor: NSColor.white.withAlphaComponent(0.75),
+                .paragraphStyle: paragraph,
+            ]))
+            result.append(line)
+        }
+        return result
     }
 }
 
@@ -91,10 +260,12 @@ final class Prompter: NSObject, NSApplicationDelegate {
     private var status: NSTextField!
 
     private let defaults = UserDefaults.standard
+    private let help = HelpPanel()
     private var scriptPath = defaultScript
     private var scriptStamp: Date?
     private var controlStamp: Date?
     private var hotKeys: [EventHotKeyRef?] = []
+    private var hotKeyFailures: [String] = []
 
     private var timer: Timer?
     private var playing = false
@@ -126,6 +297,18 @@ final class Prompter: NSObject, NSApplicationDelegate {
         didSet { applyMirror(); defaults.set(mirrored, forKey: Pref.mirrored) }
     }
 
+    /// Cliques atravessam o painel e chegam no que está atrás dele.
+    /// Só pode ser alternado por atalho global — com os cliques atravessando,
+    /// não haveria como clicar no painel para desligar.
+    private var passThrough = false {
+        didSet {
+            window.ignoresMouseEvents = passThrough
+            backdrop.setPassThrough(passThrough)
+            defaults.set(passThrough, forKey: Pref.passThrough)
+            updateStatus()
+        }
+    }
+
     // MARK: Ciclo de vida
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -133,7 +316,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
         defaults.register(defaults: [
             Pref.w: 640.0, Pref.h: 340.0, Pref.fontSize: 34.0,
             Pref.speed: 40.0, Pref.duration: 0.0, Pref.opacity: 1.0,
-            Pref.mirrored: false,
+            Pref.mirrored: false, Pref.passThrough: false, Pref.hotkeys: true,
         ])
 
         // Roteiro: argumento da linha de comando, ou o último usado, ou o padrão.
@@ -217,6 +400,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
         window.contentView = HostView(prompter: self, backdrop: backdrop)
         window.orderFrontRegardless()
         applyMirror()
+        passThrough = defaults.bool(forKey: Pref.passThrough)
     }
 
     /// Espelha na horizontal, para uso com vidro de teleprompter.
@@ -264,7 +448,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
                 Nenhum roteiro carregado.
 
                 Escreva em \(scriptPath) — recarrega ao salvar.
-                Ou copie um texto e use ⌥⌘V.
+                Ou copie um texto e use ⌃⌥⌘V.
                 """)
         }
         scriptStamp = modified(scriptPath)
@@ -342,9 +526,14 @@ final class Prompter: NSObject, NSApplicationDelegate {
         let remaining = speed > 0 ? (maxOffset - offset) / speed : 0
         let total = speed > 0 ? maxOffset / speed : 0
         let state = playing ? "▶" : "❙❙"
-        status.stringValue = String(
-            format: "%@  %@ / %@   %.0f px/s   ⌥⌘Space",
-            state, Self.clock(remaining), Self.clock(total), speed)
+        let mouse = passThrough ? "⇢ cliques passam" : "mouse ativo"
+        var line = String(
+            format: "%@  %@ / %@   %.0f px/s   ·   %@ (⌃⌥⌘L)   ·   ajuda ⌃⌥⌘/",
+            state, Self.clock(remaining), Self.clock(total), speed, mouse)
+        if !hotKeyFailures.isEmpty {
+            line += "   ·   ⚠ em conflito: " + hotKeyFailures.joined(separator: " ")
+        }
+        status.stringValue = line
     }
 
     private static func clock(_ seconds: CGFloat) -> String {
@@ -357,9 +546,15 @@ final class Prompter: NSObject, NSApplicationDelegate {
 
     private enum HotKey: UInt32 {
         case toggle = 1, faster = 2, slower = 3, top = 4, paste = 5, visibility = 6
+        case passThrough = 7
+        case moveUp = 8, moveDown = 9, moveLeft = 10, moveRight = 11
+        case dimmer = 12, brighter = 13, help = 14
     }
 
     private func installHotKeys() {
+        // Escape hatch: `cam tp hotkeys off` desliga tudo isso.
+        guard defaults.bool(forKey: Pref.hotkeys) else { return }
+
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
@@ -372,21 +567,42 @@ final class Prompter: NSObject, NSApplicationDelegate {
             return noErr
         }, 1, &spec, nil, nil)
 
-        let mods = UInt32(optionKey | cmdKey)
-        register(kVK_Space, mods, .toggle)
-        register(kVK_UpArrow, mods, .faster)
-        register(kVK_DownArrow, mods, .slower)
-        register(kVK_ANSI_R, mods, .top)
-        register(kVK_ANSI_V, mods, .paste)
-        register(kVK_ANSI_T, mods, .visibility)
+        // ⌃⌥⌘ de propósito. Um atalho registrado pelo Carbon tem precedência sobre
+        // o do sistema, então usar option+command sequestraria globalmente coisas
+        // como "Mover item aqui" (⌥⌘V no Finder) e a busca do Finder (⌥⌘Space).
+        // ⌃⌥⌘ é a combinação que o macOS praticamente não reivindica.
+        let mods = UInt32(controlKey | optionKey | cmdKey)
+        register(kVK_Space, mods, .toggle, "⌃⌥⌘Space")
+        register(kVK_UpArrow, mods, .faster, "⌃⌥⌘↑")
+        register(kVK_DownArrow, mods, .slower, "⌃⌥⌘↓")
+        register(kVK_ANSI_R, mods, .top, "⌃⌥⌘R")
+        register(kVK_ANSI_V, mods, .paste, "⌃⌥⌘V")
+        register(kVK_ANSI_T, mods, .visibility, "⌃⌥⌘T")
+        register(kVK_ANSI_L, mods, .passThrough, "⌃⌥⌘L")
+        register(kVK_ANSI_LeftBracket, mods, .dimmer, "⌃⌥⌘[")
+        register(kVK_ANSI_RightBracket, mods, .brighter, "⌃⌥⌘]")
+        register(kVK_ANSI_Slash, mods, .help, "⌃⌥⌘/")
+
+        // Mover pelo teclado: no modo atravessa-cliques não há como arrastar.
+        let moveMods = UInt32(controlKey | optionKey | cmdKey | shiftKey)
+        register(kVK_UpArrow, moveMods, .moveUp, "⌃⌥⌘⇧↑")
+        register(kVK_DownArrow, moveMods, .moveDown, "⌃⌥⌘⇧↓")
+        register(kVK_LeftArrow, moveMods, .moveLeft, "⌃⌥⌘⇧←")
+        register(kVK_RightArrow, moveMods, .moveRight, "⌃⌥⌘⇧→")
     }
 
-    private func register(_ keyCode: Int, _ mods: UInt32, _ id: HotKey) {
+    private func register(_ keyCode: Int, _ mods: UInt32, _ id: HotKey, _ label: String = "") {
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x54_50_52_4D), id: id.rawValue)  // 'TPRM'
         let status = RegisterEventHotKey(UInt32(keyCode), mods, hotKeyID,
                                         GetApplicationEventTarget(), 0, &ref)
-        if status == noErr { hotKeys.append(ref) }
+        if status == noErr {
+            hotKeys.append(ref)
+        } else {
+            // Outro app já registrou essa combinação. Silenciar isso deixaria o
+            // atalho morto sem explicação.
+            hotKeyFailures.append(label.isEmpty ? "\(id)" : label)
+        }
     }
 
     func handleHotKey(_ raw: UInt32) {
@@ -397,9 +613,25 @@ final class Prompter: NSObject, NSApplicationDelegate {
         case .top: apply(command: "top")
         case .paste: loadFromClipboard()
         case .visibility: toggleVisibility()
+        case .passThrough: passThrough.toggle()
+        case .dimmer: setOpacity(window.alphaValue - 0.1)
+        case .brighter: setOpacity(window.alphaValue + 0.1)
+        case .help: help.toggle(relativeTo: window)
+        case .moveUp: move(dx: 0, dy: 24)
+        case .moveDown: move(dx: 0, dy: -24)
+        case .moveLeft: move(dx: -24, dy: 0)
+        case .moveRight: move(dx: 24, dy: 0)
         case .none: break
         }
         updateStatus()
+    }
+
+    private func move(dx: CGFloat, dy: CGFloat) {
+        var frame = window.frame
+        frame.origin.x += dx
+        frame.origin.y += dy
+        window.setFrame(frame, display: true)
+        savePosition()
     }
 
     // MARK: Comandos
@@ -431,6 +663,15 @@ final class Prompter: NSObject, NSApplicationDelegate {
         case "mirror": mirrored.toggle()
         case "dimmer": setOpacity(window.alphaValue - 0.1)
         case "brighter": setOpacity(window.alphaValue + 0.1)
+        case "opacity":
+            if let value = Double(arg) {
+                // Aceita 0.6 ou 60.
+                setOpacity(value > 1 ? CGFloat(value / 100) : CGFloat(value))
+            }
+        case "help", "keys": help.toggle(relativeTo: window)
+        case "hotkeys":
+            let on = !(arg == "off" || arg == "false" || arg == "0")
+            defaults.set(on, forKey: Pref.hotkeys)
         case "paste": loadFromClipboard()
         case "load":
             if !arg.isEmpty {
@@ -439,6 +680,12 @@ final class Prompter: NSObject, NSApplicationDelegate {
                 loadScript()
             }
         case "reload": loadScript()
+        case "pass", "click", "clickthrough":
+            switch arg {
+            case "on", "true", "1": passThrough = true
+            case "off", "false", "0": passThrough = false
+            default: passThrough.toggle()
+            }
         case "hide": window.orderOut(nil)
         case "show": window.orderFrontRegardless()
         case "visibility": toggleVisibility()
@@ -517,7 +764,12 @@ final class Prompter: NSObject, NSApplicationDelegate {
         defaults.set(Double(window.frame.origin.y), forKey: Pref.y)
     }
 
+    func toggleHelp() { help.toggle(relativeTo: window) }
+    var isHelpVisible: Bool { help.isVisible }
+    func hideHelp() { help.hide() }
+
     func quit() {
+        help.hide()
         savePosition()
         NSApp.terminate(nil)
     }
@@ -567,7 +819,10 @@ final class HostView: NSView {
     override func keyDown(with event: NSEvent) {
         switch event.charactersIgnoringModifiers?.lowercased() ?? "" {
         case " ": prompter?.toggle()
-        case "q", "\u{1B}": prompter?.quit()
+        case "h", "?": prompter?.toggleHelp()
+        case "\u{1B}":                     // Esc fecha a ajuda antes de encerrar
+            if prompter?.isHelpVisible == true { prompter?.hideHelp() } else { prompter?.quit() }
+        case "q": prompter?.quit()
         case "r": prompter?.restart()
         case "m": prompter?.toggleMirror()
         case "v": prompter?.apply(command: "paste")

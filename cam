@@ -94,19 +94,31 @@ cam tp — teleprompter invisível em gravação e compartilhamento de tela
   cam tp faster | slower
   cam tp font 40 | bigger | smaller
   cam tp mirror             espelha (para vidro de teleprompter)
-  cam tp dimmer | brighter  opacidade
+  cam tp opacity 0.6        opacidade (0.25 a 1, ou 25 a 100)
+  cam tp dimmer | brighter  opacidade em passos
+  cam tp pass on|off        cliques atravessam o painel (ou não)
+  cam tp keys               mostra a ajuda na tela
+  cam tp hotkeys off        desliga os atalhos globais
   cam tp hide | show
   cam tp stop               fecha
 
-Atalhos globais (funcionam com qualquer app em foco):
-  ⌥⌘Space   play / pause
-  ⌥⌘↑ ⌥⌘↓   mais rápido / mais lento
-  ⌥⌘R       volta ao início
-  ⌥⌘V       carrega o texto do clipboard
-  ⌥⌘T       esconde / mostra o painel
+Atalhos globais — ⌃⌥⌘ (control+option+command), a combinação que o macOS não
+usa. Funcionam com qualquer app em foco:
+  ⌃⌥⌘Space    play / pause
+  ⌃⌥⌘↑ ⌃⌥⌘↓   mais rápido / mais lento
+  ⌃⌥⌘R        volta ao início
+  ⌃⌥⌘V        carrega o texto do clipboard
+  ⌃⌥⌘[ ⌃⌥⌘]   menos / mais opaco
+  ⌃⌥⌘L        cliques atravessam o painel (liga/desliga)
+  ⌃⌥⌘T        esconde / mostra o painel
+  ⌃⌥⌘/        abre e fecha a ajuda na tela
+  ⌃⌥⌘⇧ setas  move o painel pelo teclado
 
-Com o painel em foco: arrastar move, option+arrastar redimensiona,
-scroll rola à mão, espaço play/pause, +/− fonte, [ ] opacidade,
+No modo atravessa-cliques a borda fica tracejada e o painel ignora o mouse
+por completo — use ⌃⌥⌘L ou ⌃⌥⌘⇧ setas, que continuam funcionando.
+
+Com o mouse ativo: arrastar move, option+arrastar redimensiona,
+scroll rola à mão, espaço play/pause, H ajuda, +/− fonte, [ ] opacidade,
 setas ajustam, M espelha, R reinicia, Q sai.
 TXT
 }
@@ -128,9 +140,33 @@ tp_dispatch() {
             [ $# -ge 1 ] || { echo "uso: cam tp load ~/roteiro.txt"; exit 1; }
             tp_ready; tp_send "load $1"
             ;;
-        time|speed|font)
+        time|speed|font|opacity)
             [ $# -ge 1 ] || { echo "uso: cam tp $sub <valor>"; exit 1; }
             tp_ready; tp_send "$sub $1"
+            ;;
+        keys|help)
+            tp_ready; tp_send "help"
+            ;;
+        hotkeys)
+            case "${1:-on}" in
+                off|false|0)
+                    tp_send "hotkeys off"
+                    defaults write com.startse.teleprompter tpHotkeys -bool false
+                    echo "Atalhos globais desligados. Reabra para valer: cam tp stop && cam tp"
+                    ;;
+                *)
+                    defaults write com.startse.teleprompter tpHotkeys -bool true
+                    echo "Atalhos globais ligados. Reabra para valer: cam tp stop && cam tp"
+                    ;;
+            esac
+            ;;
+        pass|click|clickthrough)
+            tp_ready; tp_send "pass ${1:-toggle}"
+            case "${1:-toggle}" in
+                on|true|1)  echo "Cliques atravessam o painel (⌥⌘L para voltar).";;
+                off|false|0) echo "Mouse ativo no painel.";;
+                *) echo "Modo do mouse alternado (⌥⌘L faz o mesmo).";;
+            esac
             ;;
         play|pause|toggle|top|faster|slower|bigger|smaller|mirror|paste|reload|dimmer|brighter|hide|show)
             tp_ready; tp_send "$sub"
