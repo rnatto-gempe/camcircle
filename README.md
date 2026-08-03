@@ -238,6 +238,20 @@ O toggle é atalho global por necessidade: com os cliques atravessando, não hav
 clicar no painel para desligar. `⌃⌥⌘⇧`+setas move o painel nesse modo, e `cam tp pass off`
 é a saída pelo terminal.
 
+### Onde o texto começa
+
+O roteiro nasce **na linha de leitura**, não no topo do painel — então você já
+começa olhando para o lugar certo, e o texto só sobe a partir dali.
+
+Isso é feito com dois espaçadores de altura exata (uma quebra de linha com
+`minimumLineHeight`/`maximumLineHeight` fixos): um antes do texto, do tamanho da
+distância entre o topo e a linha, e outro depois, para a última frase conseguir subir
+até a linha em vez de parar no meio do painel. Como as duas alturas dependem do tamanho
+do painel, são recalculadas a cada redimensionamento e a cada mudança de fonte.
+
+A posição da linha é uma constante só (`readingLineFromTop = 0.38`), usada tanto para
+desenhá-la quanto para calcular o espaçador — não há como as duas saírem de sincronia.
+
 ### Modo tempo
 
 `cam tp time 3:00` não é um cronômetro — ele mede a altura real do texto renderizado

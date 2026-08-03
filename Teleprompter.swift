@@ -18,6 +18,11 @@ private enum Pref {
 private let controlPath = NSString(string: "~/.teleprompter/control").expandingTildeInPath
 private let defaultScript = NSString(string: "~/Documents/teleprompter.txt").expandingTildeInPath
 
+/// Altura da linha de leitura, medida do topo do painel. O texto começa nela e
+/// sobe a partir dali — por isso a mesma constante serve para desenhar a linha e
+/// para calcular o espaçador inicial.
+private let readingLineFromTop: CGFloat = 0.38
+
 // MARK: - Janela
 
 /// Painel não-ativador: clicar nele não tira o foco do app que você está usando.
@@ -89,7 +94,7 @@ final class Backdrop: NSView {
     override func layout() {
         super.layout()
         fade.frame = bounds
-        let y = bounds.height * 0.62
+        let y = bounds.height * (1 - readingLineFromTop)
         let path = CGMutablePath()
         path.move(to: CGPoint(x: 16, y: y))
         path.addLine(to: CGPoint(x: bounds.width - 16, y: y))
@@ -265,6 +270,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
 
     private let defaults = UserDefaults.standard
     private let help = HelpPanel()
+    private var bodyText = ""
     private var scriptPath = defaultScript
     private var scriptStamp: Date?
     private var controlStamp: Date?
@@ -278,7 +284,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
 
     private var fontSize: CGFloat = 34 {
         didSet {
-            applyTextStyle()
+            render()
             recomputeSpeedFromDuration()
             defaults.set(Double(fontSize), forKey: Pref.fontSize)
         }
@@ -419,24 +425,50 @@ final class Prompter: NSObject, NSApplicationDelegate {
 
     // MARK: Texto
 
-    private func applyTextStyle() {
+    /// Monta o texto com espaçadores: um na frente, para a primeira linha nascer
+    /// na linha de leitura em vez de no topo; outro no fim, para a última linha
+    /// conseguir subir até lá. Os dois dependem da altura do painel, então isto
+    /// roda de novo a cada redimensionamento.
+    private func render() {
+        guard let storage = textView.textStorage else { return }
+
+        let panelHeight = scrollView.contentView.bounds.height
+        let lineFromTop = panelHeight * readingLineFromTop
+        let inset = textView.textContainerInset.height
+
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = fontSize * 0.40
         paragraph.paragraphSpacing = fontSize * 0.65
         paragraph.alignment = .center
 
-        let length = textView.textStorage?.length ?? 0
-        textView.textStorage?.setAttributes([
+        let body = NSAttributedString(string: bodyText, attributes: [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
-        ], range: NSRange(location: 0, length: length))
+        ])
+
+        let result = NSMutableAttributedString()
+        result.append(Self.spacer(lineFromTop - inset))
+        result.append(body)
+        result.append(Self.spacer(panelHeight - lineFromTop))
+        storage.setAttributedString(result)
+    }
+
+    /// Uma quebra de linha com altura exata, usada como espaçador.
+    private static func spacer(_ height: CGFloat) -> NSAttributedString {
+        guard height > 1 else { return NSAttributedString() }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = height
+        paragraph.maximumLineHeight = height
+        return NSAttributedString(string: "\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 1),
+            .paragraphStyle: paragraph,
+        ])
     }
 
     private func setText(_ text: String) {
-        // Respiro no fim para o texto poder subir até sair da tela.
-        textView.string = text + "\n\n\n"
-        applyTextStyle()
+        bodyText = text
+        render()
         offset = 0
         scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
@@ -765,6 +797,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
         defaults.set(Double(frame.width), forKey: Pref.w)
         defaults.set(Double(frame.height), forKey: Pref.h)
         applyMirror()
+        render()                  // os espaçadores dependem da altura do painel
         recomputeSpeedFromDuration()
     }
 
