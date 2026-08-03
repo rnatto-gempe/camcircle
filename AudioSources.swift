@@ -139,18 +139,14 @@ final class SystemAudioSource: AudioSource {
 
     /// Formato entregue pelo tap: 48kHz, estéreo, float32 **entrelaçado**.
     private var tapFormat: AVAudioFormat?
-    /// Mono 16kHz é o formato canônico de reconhecimento de fala. Entregar o
-    /// estéreo entrelaçado do tap direto ao SFSpeech resulta em silêncio sem
-    /// erro nenhum — foi exatamente o que aconteceu na primeira versão.
-    private let speechFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                             sampleRate: 16000,
-                                             channels: 1,
-                                             interleaved: false)
-    /// Fator de decimação inteiro (48000 / 16000 = 3).
-    private var decimation = 3
-    /// Amostras mono a 48kHz que sobraram do buffer anterior. Sem este resto, a
-    /// decimação recomeçaria fora de fase a cada buffer e o áudio viraria mingau.
-    private var carry: [Float] = []
+    /// Mono não-entrelaçado, na MESMA taxa do tap.
+    ///
+    /// O reconhecedor recusa o estéreo entrelaçado do tap com
+    /// `kAFAssistantErrorDomain:1110 No speech detected`, mesmo com sinal forte —
+    /// medido 18 de 18 vezes. O microfone, que funciona, entrega mono
+    /// não-entrelaçado. Aqui a única diferença aplicada é essa: desentrelaça e
+    /// mixa para um canal, sem tocar na taxa de amostragem.
+    private var monoFormat: AVAudioFormat?
 
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     private(set) var isRunning = false
@@ -187,11 +183,9 @@ final class SystemAudioSource: AudioSource {
     }
 
     func startDump(to path: String) {
-        guard let speechFormat else { return }
+        guard let monoFormat else { return }
         dumpFile = try? AVAudioFile(forWriting: URL(fileURLWithPath: path),
-                                    settings: speechFormat.settings,
-                                    commonFormat: .pcmFormatFloat32,
-                                    interleaved: false)
+                                    settings: monoFormat.settings)
     }
 
     func stopDump() { dumpFile = nil; rawDumpFile = nil }
@@ -240,16 +234,16 @@ final class SystemAudioSource: AudioSource {
             return
         }
         tapFormat = audioFormat
-
-        guard let speechFormat else { cleanup(); return }
-        let ratio = audioFormat.sampleRate / speechFormat.sampleRate
-        guard ratio >= 1, abs(ratio.rounded() - ratio) < 0.001 else {
+        guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                       sampleRate: audioFormat.sampleRate,
+                                       channels: 1,
+                                       interleaved: false) else {
             cleanup()
-            completion("Taxa de amostragem \(Int(audioFormat.sampleRate))Hz não é múltiplo de 16kHz.")
+            completion("Não foi possível montar o formato mono.")
             return
         }
-        decimation = Int(ratio.rounded())
-        carry = []
+        monoFormat = mono
+
 
         // Aggregate privado: não aparece na lista de dispositivos do usuário.
         let aggregate: [String: Any] = [
@@ -354,53 +348,30 @@ final class SystemAudioSource: AudioSource {
         }
     }
 
-    /// Mixa para mono e decima para 16kHz na mão.
-    ///
-    /// Feito sem `AVAudioConverter` de propósito: ele é stateful, e chamá-lo por
-    /// buffer com `.noDataNow` reinicia o filtro de reamostragem a cada ~21ms.
-    /// O resultado tem o nível certo e o conteúdo destruído — medi pico e RMS
-    /// idênticos ao original e ainda assim "No speech detected".
+    /// Desentrelaça e mixa para mono, mantendo a taxa do tap.
     private func convertAndDeliver(_ input: AVAudioPCMBuffer) {
-        guard let speechFormat, let source = input.floatChannelData?[0] else { return }
+        guard let monoFormat, let source = input.floatChannelData?[0] else { return }
 
         let channels = Int(input.format.channelCount)
         let frames = Int(input.frameLength)
-
-        // Um canal só, não a média dos dois. Se o mixdown do tap entregar os
-        // canais em fase oposta, somá-los cancela a fala e sobra o ruído — o
-        // nível medido continua igual e o conteúdo vira irreconhecível.
-        var mono = carry
-        mono.reserveCapacity(carry.count + frames)
-        for frame in 0..<frames {
-            mono.append(source[frame * channels])
-        }
-
-        // Média de cada grupo de `decimation` amostras: serve de filtro
-        // anti-aliasing simples e mantém a fase contínua entre buffers.
-        let outputCount = mono.count / decimation
-        guard outputCount > 0 else { carry = mono; return }
-        carry = Array(mono[(outputCount * decimation)...])
-
-        guard let output = AVAudioPCMBuffer(pcmFormat: speechFormat,
-                                            frameCapacity: AVAudioFrameCount(outputCount)),
+        guard frames > 0,
+              let output = AVAudioPCMBuffer(pcmFormat: monoFormat,
+                                            frameCapacity: AVAudioFrameCount(frames)),
               let target = output.floatChannelData?[0] else { return }
-        output.frameLength = AVAudioFrameCount(outputCount)
+        output.frameLength = AVAudioFrameCount(frames)
 
-        for i in 0..<outputCount {
+        var peak: Float = 0
+        for frame in 0..<frames {
             var sum: Float = 0
-            for j in 0..<decimation { sum += mono[i * decimation + j] }
-            target[i] = sum / Float(decimation)
+            for channel in 0..<channels { sum += source[frame * channels + channel] }
+            let value = sum / Float(channels)
+            target[frame] = value
+            peak = max(peak, abs(value))
         }
 
-        // Pico serve de diagnóstico: distingue "não chega áudio" de
-        // "chega áudio, mas o reconhecedor não entende".
-        if let samples = output.floatChannelData?[0] {
-            var peak: Float = 0
-            for i in 0..<Int(output.frameLength) { peak = max(peak, abs(samples[i])) }
-            peakLevel = max(peakLevel * 0.995, peak)
-            peakEver = max(peakEver, peak)
-        }
-        deliveredFrames += Int(output.frameLength)
+        peakLevel = max(peakLevel * 0.995, peak)
+        peakEver = max(peakEver, peak)
+        deliveredFrames += frames
         if let dumpFile { try? dumpFile.write(from: output) }
 
         onBuffer?(output)

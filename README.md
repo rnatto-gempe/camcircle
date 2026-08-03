@@ -363,50 +363,50 @@ acento divergente, pontuação divergente, repetição legítima de palavra na f
 - **Silêncio não é erro.** O reconhecedor devolve `No speech detected` (código 1110) em
   qualquer pausa; o app trata isso como estado normal e sobe outra requisição, em vez de
   encher o rodapé de avisos.
-### Áudio do sistema: captura funciona, transcrição não — e eu não consegui resolver
+### Áudio do sistema — funciona
 
-O Core Audio process tap captura a saída do sistema corretamente. Medido com um vídeo do
-YouTube tocando:
+Transcreve a saída do sistema em paralelo com o microfone, em duas colunas. Verificado com
+a apresentação tocando e falando ao mesmo tempo:
 
 ```
-amostras entregues:  1.484.629
-pico do buffer cru:  0,3406
-pico após conversão: 0,2978   (-10,5 dBFS, sinal forte e limpo)
-caracteres:          0
-erro:                nenhum
+VOCÊ:    "Como é que tá ficando · Tá ficando legal · Olha só · Alô Teste"
+SISTEMA: "Pessoal · Um grande problema · Nós temos · Além desses seis pilares · Estudos"
 ```
 
-O `SFSpeechRecognizer` recebe áudio forte e devolve zero caracteres, **sem reportar erro**.
-Não conseguimos passar disso.
+Ligue com `cam cc system on` ou `⌃⌥⌘H`.
 
-Descartado por medição, cada um com teste próprio:
+#### O que custou caro: o reconhecedor recusa estéreo entrelaçado
 
-- **não é permissão** — o tap é criado com status 0;
-- **não é ausência de áudio** — 1,4M amostras, pico -10 dBFS;
-- **não é concorrência com o microfone** — falha com o microfone comprovadamente parado
-  (`fonte ativa: false`);
-- **não é o `AVAudioConverter`** ser stateful — substituído por decimação 3:1 manual;
-- **não é fase invertida** no downmix — usar um canal só não mudou;
-- **não é o aggregate expor outro stream** — há um único buffer de entrada, 2 canais;
-- **não é o layout da interface** — o relatório de layout mostra container de 792pt e o
-  texto simplesmente não tem caracteres.
+O tap entrega **48kHz estéreo float32 entrelaçado**. Entregar isso ao `SFSpeechRecognizer`
+resulta em `kAFAssistantErrorDomain:1110 No speech detected` — **18 de 18 vezes, com sinal
+forte** (pico 0,2356). Sem erro visível de formato, sem aviso: ele simplesmente afirma que
+não há fala.
 
-Duas correções reais saíram da investigação e **ficaram**:
+A correção é entregar **mono não-entrelaçado, na mesma taxa do tap**. É o formato que o
+microfone entrega e que sempre funcionou. Nada mais mudou: nenhuma reamostragem, nenhum
+`AVAudioConverter`.
 
-1. **O microfone morria ao ligar o áudio do sistema.** O `AVAudioEngine` para sozinho
-   quando a configuração de hardware muda, e criar o aggregate device do tap é exatamente
-   isso. Agora o app observa `AVAudioEngineConfigurationChange` e religa o engine com o
-   formato novo. As duas fontes passaram a coexistir.
-2. **A transcrição parava depois de ~40 segundos.** A sobreposição mantém duas requisições
-   no ar por 2s, e um único `SFSpeechRecognizer` não sustenta isso — a segunda tarefa
-   morria. Agora há dois reconhecedores alternados, e as tarefas ficam retidas até
-   entregarem o resultado final.
+Só cheguei nisso depois de instrumentar os códigos de erro. Antes eu classificava o 1110
+como "silêncio, rotina" e o suprimia da interface — escondendo de mim mesmo a única pista
+que existia. Contar e exibir os erros, mesmo os esperados, foi o que destravou.
 
-**O que eu faria diferente:** o `SFSpeechRecognizer` foi feito para ditado curto do
-microfone, não para uma sessão contínua alimentada por buffers arbitrários. O
-`SpeechTranscriber` do macOS 26 é a API certa para isto — mas exige o SDK 26, ou seja, o
-Xcode. Se legenda ao vivo importa de verdade, esse é o caminho, não continuar forçando
-esta base.
+Outras armadilhas confirmadas, todas escondidas atrás de `noErr`:
+
+- **O `AVAudioEngine` para sozinho** quando a configuração de hardware muda, e criar o
+  aggregate device do tap é exatamente isso. Sem observar
+  `AVAudioEngineConfigurationChange` e religar, ligar o áudio do sistema **mata o
+  microfone**.
+- **O aggregate precisa de um dispositivo de saída real como main sub-device**, com o tap
+  como sub-tap. Tap como main sub-device com lista vazia entrega zero amostras em silêncio.
+- **Não mexa em `isExclusive`** depois de `init(stereoGlobalTapButExcludeProcesses:)` — ele
+  é o flag de direção, e invertê-lo troca "excluir estes PIDs" por "incluir só estes".
+
+#### Limites
+
+A transcrição sai **fragmentada**: frases curtas, com palavras perdidas entre segmentos. O
+`SFSpeechRecognizer` encerra cada requisição no silêncio e é preciso abrir outra, e o áudio
+do vão é reaproveitado mas o contexto da frase se perde. Serve como legenda de apoio ao
+vivo; não serve como transcrição fiel.
 
 ### Por que um app separado
 

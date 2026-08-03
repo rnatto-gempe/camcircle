@@ -18,49 +18,51 @@ private enum Pref {
 
 private let controlPath = NSString(string: "~/.teleprompter/captions-control").expandingTildeInPath
 
-// MARK: - Transcrição contínua
+// MARK: - Transcrição por segmentos curtos
 
-/// Transcreve o microfone indefinidamente, on-device.
+/// Transcreve on-device em **segmentos curtos**, um por frase.
 ///
-/// O `SFSpeechRecognizer` não sustenta uma sessão longa: medi que uma requisição
-/// de 100s devolve só uma janela do áudio, não o todo. A saída é rotacionar a
-/// requisição — e a rotação ingênua perde ou duplica palavras na emenda.
-///
-/// Aqui a virada é feita com sobreposição: a requisição nova começa a receber
-/// áudio ANTES de a antiga ser encerrada, então nada se perde no vão. O trecho
-/// que as duas ouviram é removido por casamento de palavras, então nada duplica.
+/// O `SFSpeechRecognizer` foi feito para ditado curto: cada requisição cobre uma
+/// fala e se encerra sozinha no silêncio. A versão anterior tentava manter uma
+/// sessão contínua com requisições sobrepostas e costura de palavras — muito mais
+/// complexa e frágil. Aqui, quando um segmento fecha, o próximo abre na hora, e
+/// cada resultado final é uma frase pronta que só precisa ser anexada.
 final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
 
-    /// Depois de quanto tempo trocar de requisição. Bem abaixo do limite medido.
-    private let rotateAfter: TimeInterval = 40
-    /// Quanto tempo as duas requisições recebem áudio em paralelo.
-    private let overlap: TimeInterval = 2.0
+    /// Um segmento que passe disto sem fechar é encerrado à força. Medi que uma
+    /// requisição longa devolve só uma janela do áudio, então não vale esperar.
+    private let maxSegment: TimeInterval = 45
 
-    /// DOIS reconhecedores, alternados a cada rotação.
-    ///
-    /// A sobreposição cria a requisição nova antes de encerrar a antiga, então
-    /// por ~2s existem duas tarefas ao mesmo tempo. Um único SFSpeechRecognizer
-    /// não sustenta isso: a segunda tarefa morre e o texto congela depois da
-    /// primeira virada — exatamente o "funcionou e parou".
-    private var recognizers: [SFSpeechRecognizer] = []
-    private var recognizerIndex = 0
-    /// Tarefas ainda no ar. Soltar a referência da antiga a cancela antes de ela
-    /// entregar o resultado final, e aquele trecho de fala se perde.
-    private var tasks: [SFSpeechRecognitionTask] = []
+    private var recognizer: SFSpeechRecognizer?
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private var segmentTimer: Timer?
 
-    /// Requisição que está no ar e alimenta o texto provisório.
-    private var live: SFSpeechAudioBufferRecognitionRequest?
-    /// Requisição antiga, ainda recebendo áudio durante a sobreposição.
-    private var fading: SFSpeechAudioBufferRecognitionRequest?
+    private var segments: [String] = []
+    private var partial = ""
 
-    private var rotateTimer: Timer?
-    private var committed: [String] = []
-    private var partial: [String] = []
+    /// Áudio que chegou entre o fim de um segmento e a abertura do próximo.
+    /// Sem esta fila, 30% da fala se perdia no vão — medido.
+    private var gap: [AVAudioPCMBuffer] = []
+    private(set) var replayed = 0
 
     private(set) var isListening = false
     private(set) var lastError: String?
 
-    /// (texto confirmado, texto provisório)
+    /// Instrumentação por etapa. Sem isto, "zero caracteres" é indistinguível
+    /// entre buffer que não entra, callback que não dispara e texto vazio.
+    private(set) var appended = 0
+    private(set) var appendedWhileClosed = 0
+    private(set) var callbacks = 0
+    private(set) var partialsSeen = 0
+    private(set) var finalsSeen = 0
+    private(set) var errorsSeen = 0
+    private(set) var segmentsOpened = 0
+    private(set) var lastResultText = ""
+    /// Códigos de erro vistos, com contagem. Suprimir erros "de rotina" sem
+    /// registrá-los escondeu exatamente o que explicava a falha.
+    private(set) var errorTally: [String: Int] = [:]
+
     var onUpdate: ((String, String) -> Void)?
     var onStateChange: (() -> Void)?
 
@@ -74,15 +76,21 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     }
 
     var text: String {
-        let all = committed + partial
-        return all.joined(separator: " ")
+        (segments + (partial.isEmpty ? [] : [partial])).joined(separator: " ")
+    }
+
+    var diagnostics: String {
+        """
+        buffers: \(appended) · no vão: \(appendedWhileClosed) · devolvidos: \(replayed)
+              segmentos abertos: \(segmentsOpened) · callbacks: \(callbacks)
+              parciais: \(partialsSeen) · finais: \(finalsSeen) · erros: \(errorsSeen)
+              último texto recebido: "\(lastResultText.prefix(60))"
+              erros vistos: \(errorTally.isEmpty ? "nenhum" : errorTally.map { "\($0.key) x\($0.value)" }.joined(separator: " | "))
+        """
     }
 
     // MARK: Ciclo
 
-    /// Só o reconhecimento: o áudio entra por `feed`, venha do microfone ou do
-    /// tap da saída do sistema. É o que permite as duas fontes usarem a mesma
-    /// lógica de rotação e costura.
     func start() {
         guard !isListening else { return }
         lastError = nil
@@ -100,44 +108,136 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     }
 
     private func begin() {
-        let built = (0..<2).compactMap { _ in SFSpeechRecognizer(locale: Locale(identifier: localeID)) }
-        guard built.count == 2 else {
+        guard let rec = SFSpeechRecognizer(locale: Locale(identifier: localeID)) else {
             fail("Idioma \(localeID) não suportado.")
             return
         }
-        // Só interessa o modo local: nada de áudio saindo da máquina.
-        guard built[0].supportsOnDeviceRecognition else {
+        rec.delegate = self
+        guard rec.supportsOnDeviceRecognition else {
             fail("Sem modelo on-device para \(localeID). Ative o Ditado nesse idioma em Ajustes do Sistema › Teclado › Ditado.")
             return
         }
-        built.forEach { $0.delegate = self }
-        recognizers = built
-        recognizerIndex = 0
-
-        rotate(initial: true)
+        recognizer = rec
         isListening = true
-        rotateTimer = Timer.scheduledTimer(withTimeInterval: rotateAfter, repeats: true) { [weak self] _ in
-            self?.rotate(initial: false)
-        }
+        openSegment()
         onStateChange?()
     }
 
-    /// Durante a sobreposição as duas requisições recebem o mesmo áudio.
+    /// Abre uma requisição nova. Uma por vez: nada de sobreposição.
+    private func openSegment() {
+        guard isListening, let rec = recognizer else { return }
+
+        segmentTimer?.invalidate()
+        task?.cancel()
+
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.requiresOnDeviceRecognition = true   // nada sai da máquina
+        req.shouldReportPartialResults = true
+        req.addsPunctuation = true
+        request = req
+        segmentsOpened += 1
+
+        // Devolve o áudio do vão antes de qualquer coisa nova, para a frase
+        // começar do início e não do meio.
+        if !gap.isEmpty {
+            gap.forEach { req.append($0) }
+            replayed += gap.count
+            gap.removeAll()
+        }
+
+        task = rec.recognitionTask(with: req) { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let self, self.isListening else { return }
+                self.callbacks += 1
+
+                if let error {
+                    self.errorsSeen += 1
+                    let ns = error as NSError
+                    let key = "\(ns.domain):\(ns.code) \(ns.localizedDescription)"
+                    self.errorTally[key, default: 0] += 1
+                    // Silêncio e cancelamento são rotina num fluxo por frases.
+                    let routine = ns.code == 1110 || ns.code == 203 || ns.code == 216
+                        || ns.localizedDescription.lowercased().contains("no speech")
+                        || ns.localizedDescription.lowercased().contains("cancel")
+                    if !routine { self.lastError = ns.localizedDescription }
+
+                    // O segmento morre no silêncio antes de entregar o final, e
+                    // o parcial já tem a frase. Descartá-lo fazia o texto
+                    // aparecer e desaparecer — medido: 33 parciais, 0 finais.
+                    let pending = self.partial.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !pending.isEmpty {
+                        self.append(segment: pending)
+                        self.partial = ""
+                        self.publish()
+                    }
+                    self.onStateChange?()
+                    // Silêncio: espera mais antes de reabrir, senão são dezenas
+                    // de segmentos por segundo sem nenhum ganho.
+                    let silence = ns.code == 1110
+                        || ns.localizedDescription.lowercased().contains("no speech")
+                    self.scheduleNextSegment(after: silence ? 0.7 : 0.15)
+                    return
+                }
+
+                guard let result else { return }
+                let text = result.bestTranscription.formattedString
+                self.lastResultText = text
+
+                if result.isFinal {
+                    self.finalsSeen += 1
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { self.append(segment: trimmed) }
+                    self.partial = ""
+                    self.publish()
+                    self.scheduleNextSegment()
+                } else {
+                    self.partialsSeen += 1
+                    self.partial = text
+                    if self.lastError != nil { self.lastError = nil; self.onStateChange?() }
+                    self.publish()
+                }
+            }
+        }
+
+        // Rede de segurança: força o fechamento se a frase nunca terminar.
+        segmentTimer = Timer.scheduledTimer(withTimeInterval: maxSegment, repeats: false) { [weak self] _ in
+            self?.request?.endAudio()
+        }
+    }
+
+    /// Reabre logo, mas fora do callback, para não recriar dentro da entrega.
+    private func scheduleNextSegment(after delay: TimeInterval = 0.15) {
+        request = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.isListening else { return }
+            self.openSegment()
+        }
+    }
+
+    private func append(segment: String) {
+        segments.append(segment)
+        if segments.count > 400 { segments.removeFirst(segments.count - 400) }
+    }
+
     func feed(_ buffer: AVAudioPCMBuffer) {
-        live?.append(buffer)
-        fading?.append(buffer)
+        appended += 1
+        if let request {
+            request.append(buffer)
+            return
+        }
+        // Nenhuma requisição aberta: guarda em vez de descartar.
+        appendedWhileClosed += 1
+        gap.append(buffer)
+        if gap.count > 80 { gap.removeFirst(gap.count - 80) }
     }
 
     func stop() {
-        rotateTimer?.invalidate()
-        rotateTimer = nil
-        // Encerra o áudio para a última requisição entregar o resultado final.
-        live?.endAudio()
-        fading?.endAudio()
-        live = nil
-        fading = nil
-        tasks.forEach { $0.finish() }
-        tasks = []
+        segmentTimer?.invalidate()
+        segmentTimer = nil
+        request?.endAudio()
+        request = nil
+        task?.cancel()
+        task = nil
         isListening = false
         onStateChange?()
     }
@@ -148,12 +248,11 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     }
 
     func clear() {
-        committed = []
-        partial = []
+        segments = []
+        partial = ""
         publish()
     }
 
-    /// Erro vindo da fonte de áudio, não do reconhecedor.
     func reportExternal(_ message: String) {
         lastError = message
         onStateChange?()
@@ -165,132 +264,12 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         onStateChange?()
     }
 
-    // MARK: Rotação
-
-    /// Cria a requisição nova e agenda o encerramento da antiga, deixando as
-    /// duas ouvindo o mesmo trecho durante `overlap` segundos.
-    private func rotate(initial: Bool) {
-        guard !recognizers.isEmpty else { return }
-        // Alterna: a requisição nova nunca compartilha reconhecedor com a que
-        // ainda está encerrando.
-        recognizerIndex = (recognizerIndex + 1) % recognizers.count
-        let rec = recognizers[recognizerIndex]
-
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.requiresOnDeviceRecognition = true
-        request.shouldReportPartialResults = true
-        request.addsPunctuation = true      // ignorado em alguns idiomas, inofensivo
-
-        let old = live
-        fading = old                        // continua recebendo áudio por `overlap`
-        live = request
-
-        let task = rec.recognitionTask(with: request) { [weak self] result, error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let error {
-                    guard self.isListening else { return }
-                    let ns = error as NSError
-
-                    // "No speech detected" (1110) não é falha: é uma sala em
-                    // silêncio. Mostrar isso como erro no rodapé seria ruído
-                    // permanente em qualquer pausa da fala.
-                    let silence = ns.code == 1110
-                        || ns.localizedDescription.lowercased().contains("no speech")
-                    if !silence { self.lastError = ns.localizedDescription }
-                    self.onStateChange?()
-
-                    // A task morreu de um jeito ou de outro: sobe outra, com um
-                    // respiro para não entrar em laço apertado no silêncio.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                        guard let self, self.isListening else { return }
-                        self.rotate(initial: false)
-                    }
-                    return
-                }
-                // Chegou fala: limpa um erro antigo que já não descreve o estado.
-                if self.lastError != nil {
-                    self.lastError = nil
-                    self.onStateChange?()
-                }
-                guard let result else { return }
-                let words = Self.words(of: result.bestTranscription.formattedString)
-
-                if result.isFinal {
-                    self.commit(words)
-                    self.partial = []
-                } else {
-                    // Provisório: tira o pedaço que já está confirmado, senão a
-                    // sobreposição apareceria duplicada na tela.
-                    self.partial = Self.trimOverlap(committed: self.committed, words: words)
-                }
-                self.publish()
-            }
-        }
-
-        tasks.append(task)
-        if tasks.count > 4 { tasks.removeFirst(tasks.count - 4) }
-
-        guard !initial, let old else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + overlap) { [weak self] in
-            guard let self else { return }
-            old.endAudio()
-            if self.fading === old { self.fading = nil }
-        }
-    }
-
-    private func commit(_ words: [String]) {
-        let fresh = Self.trimOverlap(committed: committed, words: words)
-        guard !fresh.isEmpty else { return }
-        committed.append(contentsOf: fresh)
-        // Um teto evita a view crescer sem limite numa sessão longa.
-        if committed.count > 4000 { committed.removeFirst(committed.count - 4000) }
-    }
-
     private func publish() {
-        onUpdate?(committed.joined(separator: " "), partial.joined(separator: " "))
+        onUpdate?(segments.joined(separator: " "), partial)
     }
-
-    // MARK: Costura
-
-    private static func words(of text: String) -> [String] {
-        text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-    }
-
-    /// Chave de comparação: sem caixa, sem acento e sem pontuação, porque o
-    /// reconhecedor varia esses detalhes entre uma passada e outra do mesmo trecho.
-    private static func key(_ word: String) -> String {
-        word.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
-            .filter { $0.isLetter || $0.isNumber }
-    }
-
-    /// Remove do início de `words` o maior trecho que já está no fim de
-    /// `committed`. Prefere o casamento MAIOR: repetir palavra na tela é pior
-    /// do que perder uma que o reconhecedor já havia entregado.
-    static func trimOverlap(committed: [String], words: [String], maxOverlap: Int = 30) -> [String] {
-        let limit = min(maxOverlap, min(committed.count, words.count))
-        guard limit > 0 else { return words }
-
-        let tail = committed.suffix(limit).map(key)
-        let head = words.prefix(limit).map(key)
-
-        var k = limit
-        while k > 0 {
-            if Array(tail.suffix(k)) == Array(head.prefix(k)) {
-                return Array(words.dropFirst(k))
-            }
-            k -= 1
-        }
-        return words
-    }
-
-    // MARK: SFSpeechRecognizerDelegate
 
     func speechRecognizer(_ recognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
-        if !available, isListening {
-            fail("O reconhecedor ficou indisponível.")
-            stop()
-        }
+        if !available, isListening { fail("O reconhecedor ficou indisponível.") }
     }
 }
 
@@ -778,6 +757,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
               fonte ativa: \(micSource.isRunning)  ·  passo: \(micSource.lastStep)
               religadas: \(micSource.restarts)
               caracteres: \(micTranscriber.text.count)
+              \(micTranscriber.diagnostics)
               erro: \(micTranscriber.lastError ?? "nenhum")
 
             SAÍDA DO SISTEMA
@@ -788,6 +768,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
               pico de áudio: \(String(format: "%.4f", sysSource.peakLevel)) (agora) / \(String(format: "%.4f", sysSource.peakEver)) (máximo)
               caracteres: \(sysTranscriber.text.count)
               streams: \(sysSource.bufferSummary)
+              \(sysTranscriber.diagnostics)
               erro: \(sysTranscriber.lastError ?? "nenhum")
             """
         try? report.write(toFile: target, atomically: true, encoding: .utf8)
