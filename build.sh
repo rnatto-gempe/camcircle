@@ -75,7 +75,7 @@ PLIST
     # Companion.swift é a ponte entre os dois apps e vai nos dois binários.
     # shellcheck disable=SC2086
     extra_sources=""
-    [ "$name" = "Captions" ] && extra_sources="$DIR/AudioSources.swift"
+    [ "$name" = "Captions" ] && extra_sources="$DIR/AudioSources.swift $DIR/ChunkTranscriber.swift"
     # shellcheck disable=SC2086
     swiftc -O $frameworks "$DIR/$source" "$DIR/Companion.swift" $extra_sources \
         -o "$app/Contents/MacOS/$name"

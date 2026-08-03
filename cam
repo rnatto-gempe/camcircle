@@ -125,6 +125,8 @@ cam cc — legendas ao vivo, invisíveis na gravação de tela
   cam cc clear              limpa o texto
   cam cc copy               copia a transcrição para o clipboard
   cam cc save [arquivo]     salva (padrão: ~/Desktop/transcricao.txt)
+  cam cc mode chunk|live    blocos (qualidade) ou streaming (baixa latência)
+  cam cc chunk 20           duração do bloco em segundos (5 a 120)
   cam cc locale en-US       troca o idioma (pt-BR, en-US, es-ES...)
   cam cc font 24            tamanho da fonte
   cam cc opacity 0.7        opacidade
@@ -152,7 +154,7 @@ cc_dispatch() {
         ""|open|start) cc_ready; cc_send "start" ;;
         stop|toggle|clear|copy|hide|show|dimmer|brighter|bigger|smaller|quit)
             cc_ready; cc_send "$sub" ;;
-        locale|font|opacity|save|state|dump)
+        locale|font|opacity|save|state|dump|mode|chunk)
             cc_ready; cc_send "$sub ${1:-}" ;;
         pass|click) cc_ready; cc_send "pass ${1:-toggle}" ;;
         system|sys) cc_ready; cc_send "system ${1:-toggle}" ;;

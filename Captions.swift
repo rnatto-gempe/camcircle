@@ -14,6 +14,8 @@ private enum Pref {
     static let locale = "ccLocale"
     static let listening = "ccListening"
     static let systemAudio = "ccSystemAudio"
+    static let mode = "ccMode"          // "chunk" ou "live"
+    static let chunkSeconds = "ccChunkSeconds"
 }
 
 private let controlPath = NSString(string: "~/.teleprompter/captions-control").expandingTildeInPath
@@ -474,6 +476,12 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let micSource = MicrophoneSource()
     private let sysSource = SystemAudioSource()
 
+    /// Modo blocos: junta N segundos e transcreve o arquivo inteiro. Latência
+    /// em troca de qualidade — o reconhecedor é muito melhor com contexto.
+    private var micChunks: ChunkTranscriber!
+    private var sysChunks: ChunkTranscriber!
+    private var chunkMode = true
+
     private var micCommitted = "", micPartial = ""
     private var sysCommitted = "", sysPartial = ""
 
@@ -510,8 +518,20 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
 
         let locale = defaults.string(forKey: Pref.locale) ?? "pt-BR"
+        chunkMode = (defaults.string(forKey: Pref.mode) ?? "chunk") == "chunk"
+
         micTranscriber = Transcriber(localeID: locale)
         sysTranscriber = Transcriber(localeID: locale)
+        micChunks = ChunkTranscriber(localeID: locale, label: "mic")
+        sysChunks = ChunkTranscriber(localeID: locale, label: "sys")
+
+        let seconds = defaults.double(forKey: Pref.chunkSeconds)
+        if seconds >= 5 { micChunks.chunkSeconds = seconds; sysChunks.chunkSeconds = seconds }
+
+        micChunks.onUpdate = { [weak self] t in self?.micCommitted = t; self?.micPartial = ""; self?.render() }
+        sysChunks.onUpdate = { [weak self] t in self?.sysCommitted = t; self?.sysPartial = ""; self?.render() }
+        micChunks.onStateChange = { [weak self] in self?.updateStatus() }
+        sysChunks.onStateChange = { [weak self] in self?.updateStatus() }
 
         micTranscriber.onUpdate = { [weak self] c, p in
             self?.micCommitted = c; self?.micPartial = p; self?.render()
@@ -522,8 +542,14 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         micTranscriber.onStateChange = { [weak self] in self?.updateStatus() }
         sysTranscriber.onStateChange = { [weak self] in self?.updateStatus() }
 
-        micSource.onBuffer = { [weak self] buffer in self?.micTranscriber.feed(buffer) }
-        sysSource.onBuffer = { [weak self] buffer in self?.sysTranscriber.feed(buffer) }
+        micSource.onBuffer = { [weak self] buffer in
+            guard let self else { return }
+            self.chunkMode ? self.micChunks.feed(buffer) : self.micTranscriber.feed(buffer)
+        }
+        sysSource.onBuffer = { [weak self] buffer in
+            guard let self else { return }
+            self.chunkMode ? self.sysChunks.feed(buffer) : self.sysTranscriber.feed(buffer)
+        }
 
         buildWindow()
         installHotKeys()
@@ -588,7 +614,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startMic() {
         mark("startMic chamado")
-        micTranscriber.start()
+        chunkMode ? micChunks.start() : micTranscriber.start()
         mark("micTranscriber.start retornou")
         micSource.start { [weak self] error in
             self?.mark("micSource completion: \(error ?? "sem erro")")
@@ -601,14 +627,16 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func stopMic() {
         micSource.stop()
         micTranscriber.stop()
+        micChunks.stop()
     }
 
     private func startSystem() {
-        sysTranscriber.start()
+        chunkMode ? sysChunks.start() : sysTranscriber.start()
         sysSource.start { [weak self] error in
             if let error {
                 self?.sysTranscriber.reportExternal(error)
                 self?.sysTranscriber.stop()
+                self?.sysChunks.stop()
             }
             self?.updateStatus()
         }
@@ -617,6 +645,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func stopSystem() {
         sysSource.stop()
         sysTranscriber.stop()
+        sysChunks.stop()
         sysCommitted = ""; sysPartial = ""
     }
 
@@ -663,6 +692,27 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateStatus() {
+        guard chunkMode else { return updateLiveStatus() }
+
+        var line = micChunks.isRunning
+            ? String(format: "● você %.0f/%.0fs", micChunks.currentChunkSeconds, micChunks.chunkSeconds)
+            : "❙❙ você"
+        if systemAudio {
+            line += sysChunks.isRunning
+                ? String(format: "  ·  ● sistema %.0f/%.0fs", sysChunks.currentChunkSeconds, sysChunks.chunkSeconds)
+                : "  ·  ⚠ sistema"
+        } else {
+            line += "  ·  sistema desligado (⌃⌥⌘H)"
+        }
+        let inFlight = micChunks.chunksInFlight + sysChunks.chunksInFlight
+        if inFlight > 0 { line += "  ·  transcrevendo \(inFlight)" }
+        line += "  ·  blocos \(micChunks.chunksDone + sysChunks.chunksDone)"
+        if let e = micChunks.lastError { line = "⚠ você: \(e)" }
+        else if let e = sysChunks.lastError, systemAudio { line = "⚠ sistema: \(e)" }
+        status.stringValue = line
+    }
+
+    private func updateLiveStatus() {
         var line = micTranscriber.isListening ? "● você" : "❙❙ você"
         line += systemAudio
             ? "  ·  ⚠ sistema ligado DESATIVA o microfone (⌃⌥⌘H)"
@@ -697,6 +747,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         case "clear":
             micTranscriber.clear(); sysTranscriber.clear()
+            micChunks.clear(); sysChunks.clear()
             micCommitted = ""; micPartial = ""; sysCommitted = ""; sysPartial = ""
             render()
         case "copy": copyTranscript()
@@ -722,6 +773,22 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         case "hide": window.orderOut(nil)
         case "show": window.orderFrontRegardless()
+        case "mode":
+            let wanted = (arg == "live") ? false : true
+            if wanted != chunkMode {
+                stopMic(); stopSystem()
+                chunkMode = wanted
+                defaults.set(wanted ? "chunk" : "live", forKey: Pref.mode)
+                apply(command: "clear")
+                startMic()
+                if systemAudio { startSystem() }
+            }
+        case "chunk":
+            if let v = Double(arg), v >= 5, v <= 120 {
+                defaults.set(v, forKey: Pref.chunkSeconds)
+                micChunks.chunkSeconds = v
+                sysChunks.chunkSeconds = v
+            }
         case "state": dumpState(to: arg)
         case "dump":
             // Diagnóstico: grava 20s do áudio convertido para inspeção externa.
@@ -759,12 +826,14 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
               visível: \(window.isVisible)  alpha: \(String(format: "%.2f", window.alphaValue))
               layout: \(columns.layoutReport)
 
+            MODO: \(chunkMode ? "blocos" : "streaming")
+
             MICROFONE
               transcrevendo: \(micTranscriber.isListening)
               fonte ativa: \(micSource.isRunning)  ·  passo: \(micSource.lastStep)
               religadas: \(micSource.restarts)
               caracteres: \(micTranscriber.text.count)
-              \(micTranscriber.diagnostics)
+              \(chunkMode ? micChunks.diagnostics : micTranscriber.diagnostics)
               erro: \(micTranscriber.lastError ?? "nenhum")
 
             SAÍDA DO SISTEMA
@@ -775,7 +844,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
               pico de áudio: \(String(format: "%.4f", sysSource.peakLevel)) (agora) / \(String(format: "%.4f", sysSource.peakEver)) (máximo)
               caracteres: \(sysTranscriber.text.count)
               streams: \(sysSource.bufferSummary)
-              \(sysTranscriber.diagnostics)
+              \(chunkMode ? sysChunks.diagnostics : sysTranscriber.diagnostics)
               erro: \(sysTranscriber.lastError ?? "nenhum")
             """
         try? report.write(toFile: target, atomically: true, encoding: .utf8)
@@ -794,8 +863,10 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Com as duas fontes ativas, a cópia sai rotulada — senão não há como saber
     /// quem disse o quê.
     private var transcript: String {
-        guard systemAudio, !sysTranscriber.text.isEmpty else { return micTranscriber.text }
-        return "VOCÊ\n\(micTranscriber.text)\n\nSISTEMA\n\(sysTranscriber.text)"
+        let mine = chunkMode ? micChunks.text : micTranscriber.text
+        let theirs = chunkMode ? sysChunks.text : sysTranscriber.text
+        guard systemAudio, !theirs.isEmpty else { return mine }
+        return "VOCÊ\n\(mine)\n\nSISTEMA\n\(theirs)"
     }
 
     func copyTranscript() {
