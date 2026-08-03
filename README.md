@@ -363,56 +363,50 @@ acento divergente, pontuação divergente, repetição legítima de palavra na f
 - **Silêncio não é erro.** O reconhecedor devolve `No speech detected` (código 1110) em
   qualquer pausa; o app trata isso como estado normal e sobe outra requisição, em vez de
   encher o rodapé de avisos.
-### Áudio do sistema: captura pronta, transcrição não
+### Áudio do sistema: captura funciona, transcrição não — e eu não consegui resolver
 
-O Core Audio process tap está implementado e **comprovadamente captura** a saída do
-sistema, sem driver virtual e sem silenciar o que você ouve:
-
-```
-tap criado:            OK
-formato:               48000Hz, estéreo, float32 entrelaçado
-amostras entregues:    1.2M+ em ~85s
-pico do buffer cru:    0,0941  (a fonte original tinha 0,0852)
-```
-
-Os níveis batem com o áudio original, então o som certo chega ao processo.
-
-**Mas a transcrição desse áudio ainda não funciona** — o reconhecedor recebe as amostras e
-devolve zero caracteres. O microfone, no mesmo pipeline, transcreve normalmente.
-
-Já descartado por medição:
-- não é permissão (o tap é criado com status 0);
-- não é ausência de áudio (amostras chegam, com nível equivalente ao da fonte);
-- não é concorrência entre dois reconhecedores (falha também com o microfone desligado);
-- não é o `AVAudioConverter` (substituído por decimação 3:1 manual, mesmo resultado);
-- não é fase invertida no downmix (usar um canal só não mudou);
-- não é o aggregate expor o microfone do headset (há um único stream de entrada).
-
-O que ainda não foi verificado, e é o próximo passo: os arquivos de diagnóstico gravados
-com `AVAudioFile` saem malformados (`ffprobe` reporta `duration=N/A`), então **as conclusões
-tiradas deles não valem**. Antes de seguir investigando o áudio, é preciso consertar a
-gravação de diagnóstico — fechar o arquivo corretamente — e só então comparar o WAV
-capturado com o original.
-
-**E ligar o áudio do sistema quebra o microfone.** Medido com a saída nos alto-falantes,
-para o microfone ter o que ouvir:
+O Core Audio process tap captura a saída do sistema corretamente. Medido com um vídeo do
+YouTube tocando:
 
 ```
-sistema DESLIGADO → microfone: 12 caracteres   funciona
-sistema LIGADO    → microfone:  0 caracteres   quebra
-                  → sistema:    0 caracteres
+amostras entregues:  1.484.629
+pico do buffer cru:  0,3406
+pico após conversão: 0,2978   (-10,5 dBFS, sinal forte e limpo)
+caracteres:          0
+erro:                nenhum
 ```
 
-A causa é o aggregate device: ele inclui o dispositivo de saída físico como sub-device (para
-servir de referência de clock) e isso derruba a entrada do `AVAudioEngine`. As duas fontes
-não coexistem na implementação atual.
+O `SFSpeechRecognizer` recebe áudio forte e devolve zero caracteres, **sem reportar erro**.
+Não conseguimos passar disso.
 
-Por isso o áudio do sistema vem **desligado por padrão**, e o rodapé avisa quando estiver
-ligado. Enquanto não for corrigido, `cam cc` sozinho — só microfone — é o modo utilizável.
+Descartado por medição, cada um com teste próprio:
 
-O conserto tem dois caminhos a testar: montar o aggregate **só com o tap**, sem o
-dispositivo de saída como sub-device, ou alimentar as duas transcrições de um único
-`AVAudioEngine`, com o tap entrando como nó em vez de dispositivo paralelo.
+- **não é permissão** — o tap é criado com status 0;
+- **não é ausência de áudio** — 1,4M amostras, pico -10 dBFS;
+- **não é concorrência com o microfone** — falha com o microfone comprovadamente parado
+  (`fonte ativa: false`);
+- **não é o `AVAudioConverter`** ser stateful — substituído por decimação 3:1 manual;
+- **não é fase invertida** no downmix — usar um canal só não mudou;
+- **não é o aggregate expor outro stream** — há um único buffer de entrada, 2 canais;
+- **não é o layout da interface** — o relatório de layout mostra container de 792pt e o
+  texto simplesmente não tem caracteres.
+
+Duas correções reais saíram da investigação e **ficaram**:
+
+1. **O microfone morria ao ligar o áudio do sistema.** O `AVAudioEngine` para sozinho
+   quando a configuração de hardware muda, e criar o aggregate device do tap é exatamente
+   isso. Agora o app observa `AVAudioEngineConfigurationChange` e religa o engine com o
+   formato novo. As duas fontes passaram a coexistir.
+2. **A transcrição parava depois de ~40 segundos.** A sobreposição mantém duas requisições
+   no ar por 2s, e um único `SFSpeechRecognizer` não sustenta isso — a segunda tarefa
+   morria. Agora há dois reconhecedores alternados, e as tarefas ficam retidas até
+   entregarem o resultado final.
+
+**O que eu faria diferente:** o `SFSpeechRecognizer` foi feito para ditado curto do
+microfone, não para uma sessão contínua alimentada por buffers arbitrários. O
+`SpeechTranscriber` do macOS 26 é a API certa para isto — mas exige o SDK 26, ou seja, o
+Xcode. Se legenda ao vivo importa de verdade, esse é o caminho, não continuar forçando
+esta base.
 
 ### Por que um app separado
 

@@ -18,18 +18,67 @@ protocol AudioSource: AnyObject {
 
 final class MicrophoneSource: AudioSource {
 
+    private(set) var lastStep = "não iniciado"
     private let engine = AVAudioEngine()
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     private(set) var isRunning = false
 
+    private var configObserver: NSObjectProtocol?
+    /// Quantas vezes o engine foi religado por mudança de configuração.
+    private(set) var restarts = 0
+
+    /// O `AVAudioEngine` **para sozinho** quando a configuração de hardware muda
+    /// e não volta por conta própria. Criar o aggregate device do tap de sistema
+    /// é exatamente uma dessas mudanças — era isso que matava o microfone quando
+    /// o áudio do sistema era ligado. Aqui ele é religado, com o formato novo.
+    private func observeConfigurationChanges() {
+        guard configObserver == nil else { return }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.isRunning else { return }
+            self.restarts += 1
+            self.lastStep = "religando após mudança de configuração (\(self.restarts))"
+            self.reattach()
+        }
+    }
+
+    /// Reinstala o tap com o formato atual e sobe o engine de novo.
+    private func reattach() {
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        if engine.isRunning { engine.stop() }
+
+        let format = input.inputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            lastStep = "entrada indisponível ao religar"
+            isRunning = false
+            return
+        }
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+            self?.onBuffer?(buffer)
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+            lastStep = "engine religado (\(restarts))"
+        } catch {
+            lastStep = "falha ao religar: \(error.localizedDescription)"
+            isRunning = false
+        }
+    }
+
     func start(_ completion: @escaping (String?) -> Void) {
         guard !isRunning else { completion(nil); return }
+        lastStep = "pedindo permissão"
 
         // Faltar esta permissão é uma falha silenciosa: o AVAudioEngine entrega
         // buffers vazios sem erro nenhum, e o app parece escutar sem transcrever.
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.lastStep = granted ? "permissão concedida" : "permissão negada"
                 guard granted else {
                     completion("Microfone não autorizado. Libere em Ajustes do Sistema › Privacidade e Segurança › Microfone.")
                     return
@@ -45,10 +94,14 @@ final class MicrophoneSource: AudioSource {
                 }
                 self.engine.prepare()
                 do {
+                    self.lastStep = "iniciando engine"
                     try self.engine.start()
+                    self.lastStep = "engine rodando"
                     self.isRunning = true
+                    self.observeConfigurationChanges()
                     completion(nil)
                 } catch {
+                    self.lastStep = "engine falhou: \(error.localizedDescription)"
                     input.removeTap(onBus: 0)
                     completion("Não foi possível iniciar o microfone: \(error.localizedDescription)")
                 }
@@ -58,9 +111,14 @@ final class MicrophoneSource: AudioSource {
 
     func stop() {
         guard isRunning else { return }
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+            self.configObserver = nil
+        }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
+        lastStep = "parado"
     }
 }
 

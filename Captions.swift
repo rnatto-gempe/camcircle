@@ -36,11 +36,20 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     /// Quanto tempo as duas requisições recebem áudio em paralelo.
     private let overlap: TimeInterval = 2.0
 
-    private var recognizer: SFSpeechRecognizer?
+    /// DOIS reconhecedores, alternados a cada rotação.
+    ///
+    /// A sobreposição cria a requisição nova antes de encerrar a antiga, então
+    /// por ~2s existem duas tarefas ao mesmo tempo. Um único SFSpeechRecognizer
+    /// não sustenta isso: a segunda tarefa morre e o texto congela depois da
+    /// primeira virada — exatamente o "funcionou e parou".
+    private var recognizers: [SFSpeechRecognizer] = []
+    private var recognizerIndex = 0
+    /// Tarefas ainda no ar. Soltar a referência da antiga a cancela antes de ela
+    /// entregar o resultado final, e aquele trecho de fala se perde.
+    private var tasks: [SFSpeechRecognitionTask] = []
 
     /// Requisição que está no ar e alimenta o texto provisório.
     private var live: SFSpeechAudioBufferRecognitionRequest?
-    private var liveTask: SFSpeechRecognitionTask?
     /// Requisição antiga, ainda recebendo áudio durante a sobreposição.
     private var fading: SFSpeechAudioBufferRecognitionRequest?
 
@@ -91,17 +100,19 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     }
 
     private func begin() {
-        guard let rec = SFSpeechRecognizer(locale: Locale(identifier: localeID)) else {
+        let built = (0..<2).compactMap { _ in SFSpeechRecognizer(locale: Locale(identifier: localeID)) }
+        guard built.count == 2 else {
             fail("Idioma \(localeID) não suportado.")
             return
         }
-        rec.delegate = self
         // Só interessa o modo local: nada de áudio saindo da máquina.
-        guard rec.supportsOnDeviceRecognition else {
+        guard built[0].supportsOnDeviceRecognition else {
             fail("Sem modelo on-device para \(localeID). Ative o Ditado nesse idioma em Ajustes do Sistema › Teclado › Ditado.")
             return
         }
-        recognizer = rec
+        built.forEach { $0.delegate = self }
+        recognizers = built
+        recognizerIndex = 0
 
         rotate(initial: true)
         isListening = true
@@ -125,7 +136,8 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         fading?.endAudio()
         live = nil
         fading = nil
-        liveTask = nil
+        tasks.forEach { $0.finish() }
+        tasks = []
         isListening = false
         onStateChange?()
     }
@@ -158,7 +170,11 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     /// Cria a requisição nova e agenda o encerramento da antiga, deixando as
     /// duas ouvindo o mesmo trecho durante `overlap` segundos.
     private func rotate(initial: Bool) {
-        guard let rec = recognizer else { return }
+        guard !recognizers.isEmpty else { return }
+        // Alterna: a requisição nova nunca compartilha reconhecedor com a que
+        // ainda está encerrando.
+        recognizerIndex = (recognizerIndex + 1) % recognizers.count
+        let rec = recognizers[recognizerIndex]
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
@@ -169,7 +185,7 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         fading = old                        // continua recebendo áudio por `overlap`
         live = request
 
-        liveTask = rec.recognitionTask(with: request) { [weak self] result, error in
+        let task = rec.recognitionTask(with: request) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let error {
@@ -211,6 +227,9 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
                 self.publish()
             }
         }
+
+        tasks.append(task)
+        if tasks.count > 4 { tasks.removeFirst(tasks.count - 4) }
 
         guard !initial, let old else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + overlap) { [weak self] in
@@ -349,12 +368,21 @@ final class ColumnsView: NSView {
         }
 
         for (scroll, text) in [(micScroll, micText), (sysScroll, sysText)] {
+            // Frame explícito: um NSTextView criado sem frame nasce com tamanho
+            // zero, o container fica com largura zero e o texto nunca é
+            // desenhado — transcreve e não aparece nada na tela.
+            text.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
             text.isEditable = false
             text.isSelectable = false
             text.drawsBackground = false
             text.textContainerInset = NSSize(width: 14, height: 8)
             text.isVerticallyResizable = true
             text.isHorizontallyResizable = false
+            text.autoresizingMask = [.width]
+            text.minSize = NSSize(width: 0, height: 0)
+            text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                  height: CGFloat.greatestFiniteMagnitude)
+            text.textContainer?.widthTracksTextView = true
             scroll.drawsBackground = false
             scroll.hasVerticalScroller = false
             scroll.documentView = text
@@ -381,6 +409,7 @@ final class ColumnsView: NSView {
 
         guard showsSystem else {
             micScroll.frame = bounds
+            resizeText(micText, to: micScroll)
             return
         }
 
@@ -392,6 +421,37 @@ final class ColumnsView: NSView {
         micScroll.frame = NSRect(x: 0, y: 0, width: half, height: bounds.height - headerHeight)
         divider.frame = NSRect(x: half, y: 4, width: 1, height: bounds.height - headerHeight - 8)
         sysScroll.frame = NSRect(x: half + 1, y: 0, width: half, height: bounds.height - headerHeight)
+        resizeText(micText, to: micScroll)
+        resizeText(sysText, to: sysScroll)
+    }
+
+    /// Casa a largura do text view com a do clip view. Sem isso o container de
+    /// texto mantém a largura antiga e o texto some ao redimensionar.
+    private func resizeText(_ text: NSTextView, to scroll: NSScrollView) {
+        let width = scroll.contentSize.width
+        guard width > 0 else { return }
+        text.frame.size.width = width
+        text.textContainer?.containerSize = NSSize(width: width - text.textContainerInset.width * 2,
+                                                  height: CGFloat.greatestFiniteMagnitude)
+    }
+
+    /// Diagnóstico de layout: o painel é invisível na captura, então é o único
+    /// jeito de saber se o texto está sendo desenhado.
+    var layoutReport: String {
+        func describe(_ label: String, _ text: NSTextView, _ scroll: NSScrollView) -> String {
+            let used = text.layoutManager.flatMap { manager -> CGFloat? in
+                guard let container = text.textContainer else { return nil }
+                manager.ensureLayout(for: container)
+                return manager.usedRect(for: container).height
+            } ?? -1
+            return String(format: "%@ scroll %.0fx%.0f · text %.0fx%.0f · container %.0f · usado %.0f · chars %d",
+                          label, scroll.frame.width, scroll.frame.height,
+                          text.frame.width, text.frame.height,
+                          text.textContainer?.containerSize.width ?? -1,
+                          used, text.string.count)
+        }
+        return describe("você:", micText, micScroll) + "\n              "
+             + describe("sistema:", sysText, sysScroll)
     }
 }
 
@@ -411,6 +471,14 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKeys: [EventHotKeyRef?] = []
     private var hotKeyFailures: [String] = []
     private var controlStamp: Date?
+
+    /// Rastro de inicialização: sem ver a sequência real, um "transcrevendo:
+    /// false" sem erro é indistinguível de callback que não voltou.
+    private var trace: [String] = []
+    private func mark(_ step: String) {
+        trace.append(step)
+        if trace.count > 40 { trace.removeFirst() }
+    }
     private var pollTimer: Timer?
 
     /// Um par transcritor + fonte por entrada. O transcritor é o mesmo código
@@ -533,11 +601,15 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Fontes
 
     private func startMic() {
+        mark("startMic chamado")
         micTranscriber.start()
+        mark("micTranscriber.start retornou")
         micSource.start { [weak self] error in
+            self?.mark("micSource completion: \(error ?? "sem erro")")
             if let error { self?.micTranscriber.reportExternal(error) }
             self?.updateStatus()
         }
+        mark("micSource.start retornou")
     }
 
     private func stopMic() {
@@ -693,9 +765,18 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             permissão de microfone: \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue) (3 = ok)
             on-device suportado: \(rec?.supportsOnDeviceRecognition.description ?? "n/d")
 
+            RASTRO
+              \(trace.isEmpty ? "vazio" : trace.joined(separator: "\n              "))
+
+            JANELA
+              frame: \(Int(window.frame.origin.x)),\(Int(window.frame.origin.y)) \(Int(window.frame.width))x\(Int(window.frame.height))
+              visível: \(window.isVisible)  alpha: \(String(format: "%.2f", window.alphaValue))
+              layout: \(columns.layoutReport)
+
             MICROFONE
               transcrevendo: \(micTranscriber.isListening)
-              fonte ativa: \(micSource.isRunning)
+              fonte ativa: \(micSource.isRunning)  ·  passo: \(micSource.lastStep)
+              religadas: \(micSource.restarts)
               caracteres: \(micTranscriber.text.count)
               erro: \(micTranscriber.lastError ?? "nenhum")
 
