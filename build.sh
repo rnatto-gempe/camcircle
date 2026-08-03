@@ -15,6 +15,7 @@ cat > "$CAM_ENT" <<'PLIST'
 <dict>
     <key>com.apple.security.device.camera</key>     <true/>
     <key>com.apple.security.device.audio-input</key><true/>
+    <key>com.apple.security.device.microphone</key><true/>
 </dict>
 </plist>
 PLIST
@@ -25,6 +26,7 @@ cat > "$CC_ENT" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>com.apple.security.device.audio-input</key><true/>
+    <key>com.apple.security.device.microphone</key><true/>
 </dict>
 </plist>
 PLIST
@@ -72,7 +74,10 @@ PLIST
     echo "==> $name: compilando"
     # Companion.swift é a ponte entre os dois apps e vai nos dois binários.
     # shellcheck disable=SC2086
-    swiftc -O $frameworks "$DIR/$source" "$DIR/Companion.swift" \
+    extra_sources=""
+    [ "$name" = "Captions" ] && extra_sources="$DIR/AudioSources.swift"
+    # shellcheck disable=SC2086
+    swiftc -O $frameworks "$DIR/$source" "$DIR/Companion.swift" $extra_sources \
         -o "$app/Contents/MacOS/$name"
 
     # Hardened runtime (--options runtime) faz o dyld ignorar DYLD_INSERT_LIBRARIES
@@ -103,12 +108,14 @@ build_app Teleprompter Teleprompter.swift com.startse.teleprompter \
     "-framework AppKit -framework Carbon"
 
 build_app Captions Captions.swift com.startse.captions \
-    "-framework AppKit -framework AVFoundation -framework Carbon -framework Speech" \
+    "-framework AppKit -framework AVFoundation -framework Carbon -framework Speech -framework CoreAudio" \
     "$CC_ENT" \
     '    <key>NSMicrophoneUsageDescription</key>
     <string>Transcrever sua fala em legendas na tela.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Gerar as legendas localmente, sem enviar audio para servidores.</string>'
+    <string>Gerar as legendas localmente, sem enviar audio para servidores.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Transcrever o audio que sai do sistema, para legendar reunioes e videos.</string>'
 
 echo
 echo "Pronto:"

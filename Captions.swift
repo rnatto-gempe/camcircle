@@ -13,6 +13,7 @@ private enum Pref {
     static let hotkeys = "ccHotkeys"
     static let locale = "ccLocale"
     static let listening = "ccListening"
+    static let systemAudio = "ccSystemAudio"
 }
 
 private let controlPath = NSString(string: "~/.teleprompter/captions-control").expandingTildeInPath
@@ -35,7 +36,6 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     /// Quanto tempo as duas requisições recebem áudio em paralelo.
     private let overlap: TimeInterval = 2.0
 
-    private let engine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
 
     /// Requisição que está no ar e alimenta o texto provisório.
@@ -71,6 +71,9 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
 
     // MARK: Ciclo
 
+    /// Só o reconhecimento: o áudio entra por `feed`, venha do microfone ou do
+    /// tap da saída do sistema. É o que permite as duas fontes usarem a mesma
+    /// lógica de rotação e costura.
     func start() {
         guard !isListening else { return }
         lastError = nil
@@ -82,24 +85,12 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
                     self.fail("Reconhecimento de fala não autorizado. Libere em Ajustes do Sistema › Privacidade e Segurança › Reconhecimento de Fala.")
                     return
                 }
-                // São duas permissões distintas, e faltar a do microfone é uma
-                // falha silenciosa: o AVAudioEngine entrega buffers vazios sem
-                // erro nenhum, então o app parece estar escutando e nunca
-                // transcreve nada. Por isso o pedido é explícito.
-                AVCaptureDevice.requestAccess(for: .audio) { granted in
-                    DispatchQueue.main.async {
-                        guard granted else {
-                            self.fail("Microfone não autorizado. Libere em Ajustes do Sistema › Privacidade e Segurança › Microfone.")
-                            return
-                        }
-                        self.beginCapture()
-                    }
-                }
+                self.begin()
             }
         }
     }
 
-    private func beginCapture() {
+    private func begin() {
         guard let rec = SFSpeechRecognizer(locale: Locale(identifier: localeID)) else {
             fail("Idioma \(localeID) não suportado.")
             return
@@ -112,31 +103,7 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         }
         recognizer = rec
 
-        let input = engine.inputNode
-        let format = input.inputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            fail("Nenhuma entrada de áudio disponível.")
-            return
-        }
-
         rotate(initial: true)
-
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            // Durante a sobreposição as duas recebem o mesmo áudio.
-            self.live?.append(buffer)
-            self.fading?.append(buffer)
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            fail("Não foi possível iniciar o áudio: \(error.localizedDescription)")
-            return
-        }
-
         isListening = true
         rotateTimer = Timer.scheduledTimer(withTimeInterval: rotateAfter, repeats: true) { [weak self] _ in
             self?.rotate(initial: false)
@@ -144,13 +111,15 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         onStateChange?()
     }
 
+    /// Durante a sobreposição as duas requisições recebem o mesmo áudio.
+    func feed(_ buffer: AVAudioPCMBuffer) {
+        live?.append(buffer)
+        fading?.append(buffer)
+    }
+
     func stop() {
         rotateTimer?.invalidate()
         rotateTimer = nil
-        if engine.isRunning {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
         // Encerra o áudio para a última requisição entregar o resultado final.
         live?.endAudio()
         fading?.endAudio()
@@ -170,6 +139,12 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         committed = []
         partial = []
         publish()
+    }
+
+    /// Erro vindo da fonte de áudio, não do reconhecedor.
+    func reportExternal(_ message: String) {
+        lastError = message
+        onStateChange?()
     }
 
     private func fail(_ message: String) {
@@ -346,6 +321,80 @@ final class CaptionBackdrop: NSView {
     }
 }
 
+// MARK: - Colunas
+
+/// Duas colunas independentes: sua fala e a saída do sistema. Com o áudio do
+/// sistema desligado, a coluna do microfone ocupa a largura toda.
+final class ColumnsView: NSView {
+
+    let micScroll = NSScrollView()
+    let micText = NSTextView()
+    let sysScroll = NSScrollView()
+    let sysText = NSTextView()
+
+    private let micHeader = NSTextField(labelWithString: "VOCÊ")
+    private let sysHeader = NSTextField(labelWithString: "SISTEMA")
+    private let divider = NSBox()
+
+    var showsSystem = false { didSet { needsLayout = true; applyVisibility() } }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        for (header, color) in [(micHeader, NSColor.white),
+                                (sysHeader, NSColor(srgbRed: 0.42, green: 0.78, blue: 0.98, alpha: 1))] {
+            header.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            header.textColor = color.withAlphaComponent(0.55)
+            addSubview(header)
+        }
+
+        for (scroll, text) in [(micScroll, micText), (sysScroll, sysText)] {
+            text.isEditable = false
+            text.isSelectable = false
+            text.drawsBackground = false
+            text.textContainerInset = NSSize(width: 14, height: 8)
+            text.isVerticallyResizable = true
+            text.isHorizontallyResizable = false
+            scroll.drawsBackground = false
+            scroll.hasVerticalScroller = false
+            scroll.documentView = text
+            addSubview(scroll)
+        }
+
+        divider.boxType = .separator
+        addSubview(divider)
+        applyVisibility()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func applyVisibility() {
+        sysScroll.isHidden = !showsSystem
+        divider.isHidden = !showsSystem
+        micHeader.isHidden = !showsSystem      // sem duas colunas, rótulo é ruído
+        sysHeader.isHidden = !showsSystem
+    }
+
+    override func layout() {
+        super.layout()
+        let headerHeight: CGFloat = showsSystem ? 16 : 0
+
+        guard showsSystem else {
+            micScroll.frame = bounds
+            return
+        }
+
+        let half = (bounds.width - 1) / 2
+        micHeader.frame = NSRect(x: 14, y: bounds.maxY - headerHeight,
+                                 width: half - 14, height: headerHeight)
+        sysHeader.frame = NSRect(x: half + 15, y: bounds.maxY - headerHeight,
+                                 width: half - 14, height: headerHeight)
+        micScroll.frame = NSRect(x: 0, y: 0, width: half, height: bounds.height - headerHeight)
+        divider.frame = NSRect(x: half, y: 4, width: 1, height: bounds.height - headerHeight - 8)
+        sysScroll.frame = NSRect(x: half + 1, y: 0, width: half, height: bounds.height - headerHeight)
+    }
+}
+
 // MARK: - Controller
 
 final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -354,17 +403,25 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var window: CaptionWindow!
     private var backdrop: CaptionBackdrop!
-    private var scrollView: NSScrollView!
-    private var textView: NSTextView!
+    private var columns: ColumnsView!
     private var status: NSTextField!
     private var statusItem: NSStatusItem?
 
     private let defaults = UserDefaults.standard
-    private var transcriber: Transcriber!
     private var hotKeys: [EventHotKeyRef?] = []
     private var hotKeyFailures: [String] = []
     private var controlStamp: Date?
     private var pollTimer: Timer?
+
+    /// Um par transcritor + fonte por entrada. O transcritor é o mesmo código
+    /// nas duas; só a origem do áudio muda.
+    private var micTranscriber: Transcriber!
+    private var sysTranscriber: Transcriber!
+    private let micSource = MicrophoneSource()
+    private let sysSource = SystemAudioSource()
+
+    private var micCommitted = "", micPartial = ""
+    private var sysCommitted = "", sysPartial = ""
 
     private var fontSize: CGFloat = 20 {
         didSet { render(); defaults.set(Double(fontSize), forKey: Pref.fontSize) }
@@ -379,36 +436,51 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private var committedText = ""
-    private var partialText = ""
+    private var systemAudio = false {
+        didSet {
+            columns.showsSystem = systemAudio
+            defaults.set(systemAudio, forKey: Pref.systemAudio)
+            systemAudio ? startSystem() : stopSystem()
+            render()
+        }
+    }
 
     // MARK: Ciclo de vida
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Captions.shared = self
         defaults.register(defaults: [
-            Pref.w: 720.0, Pref.h: 200.0, Pref.fontSize: 20.0, Pref.opacity: 1.0,
+            Pref.w: 820.0, Pref.h: 220.0, Pref.fontSize: 20.0, Pref.opacity: 1.0,
             Pref.passThrough: false, Pref.hotkeys: true, Pref.locale: "pt-BR",
+            Pref.systemAudio: false,
         ])
 
-        transcriber = Transcriber(localeID: defaults.string(forKey: Pref.locale) ?? "pt-BR")
-        transcriber.onUpdate = { [weak self] committed, partial in
-            self?.committedText = committed
-            self?.partialText = partial
-            self?.render()
+        let locale = defaults.string(forKey: Pref.locale) ?? "pt-BR"
+        micTranscriber = Transcriber(localeID: locale)
+        sysTranscriber = Transcriber(localeID: locale)
+
+        micTranscriber.onUpdate = { [weak self] c, p in
+            self?.micCommitted = c; self?.micPartial = p; self?.render()
         }
-        transcriber.onStateChange = { [weak self] in self?.updateStatus() }
+        sysTranscriber.onUpdate = { [weak self] c, p in
+            self?.sysCommitted = c; self?.sysPartial = p; self?.render()
+        }
+        micTranscriber.onStateChange = { [weak self] in self?.updateStatus() }
+        sysTranscriber.onStateChange = { [weak self] in self?.updateStatus() }
+
+        micSource.onBuffer = { [weak self] buffer in self?.micTranscriber.feed(buffer) }
+        sysSource.onBuffer = { [weak self] buffer in self?.sysTranscriber.feed(buffer) }
 
         buildWindow()
         installHotKeys()
         installStatusItem()
 
-        // Comandos da CLI, no mesmo padrão do teleprompter.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             self?.pollControl()
         }
 
-        transcriber.start()      // já sobe escutando: é o único motivo do app existir
+        startMic()
+        if defaults.bool(forKey: Pref.systemAudio) { systemAudio = true }
         render()
     }
 
@@ -438,20 +510,8 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         backdrop = CaptionBackdrop(frame: NSRect(origin: .zero, size: size))
         backdrop.autoresizingMask = [.width, .height]
 
-        textView = NSTextView(frame: NSRect(origin: .zero, size: size))
-        textView.isEditable = false
-        textView.isSelectable = false
-        textView.drawsBackground = false
-        textView.textContainerInset = NSSize(width: 20, height: 16)
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-
-        scrollView = NSScrollView(frame: NSRect(x: 0, y: 20, width: size.width, height: size.height - 20))
-        scrollView.autoresizingMask = [.width, .height]
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = false
-        scrollView.documentView = textView
+        columns = ColumnsView(frame: NSRect(x: 0, y: 20, width: size.width, height: size.height - 20))
+        columns.autoresizingMask = [.width, .height]
 
         status = NSTextField(labelWithString: "")
         status.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
@@ -460,7 +520,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status.frame = NSRect(x: 0, y: 5, width: size.width, height: 13)
         status.autoresizingMask = [.width]
 
-        backdrop.addSubview(scrollView)
+        backdrop.addSubview(columns)
         backdrop.addSubview(status)
 
         fontSize = CGFloat(defaults.double(forKey: Pref.fontSize))
@@ -470,23 +530,62 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         passThrough = defaults.bool(forKey: Pref.passThrough)
     }
 
+    // MARK: Fontes
+
+    private func startMic() {
+        micTranscriber.start()
+        micSource.start { [weak self] error in
+            if let error { self?.micTranscriber.reportExternal(error) }
+            self?.updateStatus()
+        }
+    }
+
+    private func stopMic() {
+        micSource.stop()
+        micTranscriber.stop()
+    }
+
+    private func startSystem() {
+        sysTranscriber.start()
+        sysSource.start { [weak self] error in
+            if let error {
+                self?.sysTranscriber.reportExternal(error)
+                self?.sysTranscriber.stop()
+            }
+            self?.updateStatus()
+        }
+    }
+
+    private func stopSystem() {
+        sysSource.stop()
+        sysTranscriber.stop()
+        sysCommitted = ""; sysPartial = ""
+    }
+
     // MARK: Texto
 
-    /// Confirmado em branco, provisório apagado — dá para ver a frase se formando.
     private func render() {
-        guard let storage = textView.textStorage else { return }
+        fill(columns.micText, committed: micCommitted, partial: micPartial)
+        fill(columns.sysText, committed: sysCommitted, partial: sysPartial)
+        scrollToBottom(columns.micScroll, columns.micText)
+        if systemAudio { scrollToBottom(columns.sysScroll, columns.sysText) }
+        updateStatus()
+    }
 
+    /// Confirmado em branco, provisório apagado — dá para ver a frase se formando.
+    private func fill(_ view: NSTextView, committed: String, partial: String) {
+        guard let storage = view.textStorage else { return }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = fontSize * 0.28
 
-        let result = NSMutableAttributedString(string: committedText, attributes: [
+        let result = NSMutableAttributedString(string: committed, attributes: [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .regular),
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
         ])
-        if !partialText.isEmpty {
+        if !partial.isEmpty {
             result.append(NSAttributedString(
-                string: (committedText.isEmpty ? "" : " ") + partialText,
+                string: (committed.isEmpty ? "" : " ") + partial,
                 attributes: [
                     .font: NSFont.systemFont(ofSize: fontSize, weight: .regular),
                     .foregroundColor: NSColor.white.withAlphaComponent(0.45),
@@ -494,28 +593,27 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ]))
         }
         storage.setAttributedString(result)
-        scrollToBottom()
-        updateStatus()
     }
 
-    private func scrollToBottom() {
-        guard let manager = textView.layoutManager, let container = textView.textContainer else { return }
+    private func scrollToBottom(_ scroll: NSScrollView, _ view: NSTextView) {
+        guard let manager = view.layoutManager, let container = view.textContainer else { return }
         manager.ensureLayout(for: container)
-        let height = manager.usedRect(for: container).height + textView.textContainerInset.height * 2
-        let visible = scrollView.contentView.bounds.height
-        let y = max(0, height - visible)
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
+        let height = manager.usedRect(for: container).height + view.textContainerInset.height * 2
+        let y = max(0, height - scroll.contentView.bounds.height)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     private func updateStatus() {
-        var line = transcriber.isListening ? "● escutando" : "❙❙ parado"
-        line += "  ·  \(transcriber.localeID)"
-        line += passThrough ? "  ·  ⇢ cliques passam (⌃⌥⌘N)" : "  ·  mouse ativo (⌃⌥⌘N)"
-        line += "  ·  ⌃⌥⌘J liga/desliga"
-        if let error = transcriber.lastError {
-            line = "⚠ \(error)"
-        }
+        var line = micTranscriber.isListening ? "● você" : "❙❙ você"
+        line += systemAudio
+            ? (sysTranscriber.isListening ? "  ·  ● sistema" : "  ·  ⚠ sistema")
+            : "  ·  sistema desligado (⌃⌥⌘H)"
+        line += "  ·  \(micTranscriber.localeID)"
+        line += passThrough ? "  ·  ⇢ cliques passam" : ""
+
+        if let error = micTranscriber.lastError { line = "⚠ você: \(error)" }
+        else if let error = sysTranscriber.lastError, systemAudio { line = "⚠ sistema: \(error)" }
         if !hotKeyFailures.isEmpty {
             line += "  ·  ⚠ em conflito: " + hotKeyFailures.joined(separator: " ")
         }
@@ -530,16 +628,26 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let arg = parts.count > 1 ? parts[1] : ""
 
         switch verb {
-        case "start", "listen": transcriber.start()
-        case "stop": transcriber.stop()
-        case "toggle": transcriber.isListening ? transcriber.stop() : transcriber.start()
-        case "clear": transcriber.clear()
+        case "start", "listen": startMic()
+        case "stop": stopMic()
+        case "toggle": micTranscriber.isListening ? stopMic() : startMic()
+        case "system":
+            switch arg {
+            case "on", "true", "1": systemAudio = true
+            case "off", "false", "0": systemAudio = false
+            default: systemAudio.toggle()
+            }
+        case "clear":
+            micTranscriber.clear(); sysTranscriber.clear()
+            micCommitted = ""; micPartial = ""; sysCommitted = ""; sysPartial = ""
+            render()
         case "copy": copyTranscript()
         case "save": saveTranscript(to: arg)
         case "locale":
             if !arg.isEmpty {
                 defaults.set(arg, forKey: Pref.locale)
-                transcriber.localeID = arg
+                micTranscriber.localeID = arg
+                sysTranscriber.localeID = arg
             }
         case "font": if let v = Double(arg) { fontSize = CGFloat(v).clamped(11, 60) }
         case "bigger": fontSize = (fontSize + 2).clamped(11, 60)
@@ -556,33 +664,52 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         case "hide": window.orderOut(nil)
         case "show": window.orderFrontRegardless()
-        case "state":
-            // Diagnóstico: o painel é invisível na captura, então este é o único
-            // jeito de inspecionar o estado de fora.
-            let target = arg.isEmpty
-                ? NSString(string: "~/Desktop/captions-state.txt").expandingTildeInPath
-                : (arg as NSString).expandingTildeInPath
-            let rec = SFSpeechRecognizer(locale: Locale(identifier: transcriber.localeID))
-            let report = """
-                escutando: \(transcriber.isListening)
-                idioma: \(transcriber.localeID)
-                autorização de fala: \(SFSpeechRecognizer.authorizationStatus().rawValue) \
-                (3 = autorizado)
-                recognizer existe: \(rec != nil)
-                on-device suportado: \(rec?.supportsOnDeviceRecognition.description ?? "n/d")
-                recognizer disponível: \(rec?.isAvailable.description ?? "n/d")
-                permissão de microfone: \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue) \
-                (3 = autorizado)
-                último erro: \(transcriber.lastError ?? "nenhum")
-                caracteres transcritos: \(transcriber.text.count)
-                """
-            try? report.write(toFile: target, atomically: true, encoding: .utf8)
+        case "state": dumpState(to: arg)
+        case "dump":
+            // Diagnóstico: grava 20s do áudio convertido para inspeção externa.
+            let path = arg.isEmpty ? "/tmp/captions-dump.wav" : (arg as NSString).expandingTildeInPath
+            arg.hasSuffix("raw.wav") ? sysSource.startRawDump(to: path) : sysSource.startDump(to: path)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+                self?.sysSource.stopDump()
+            }
         case "camera": Companion.toggle(name: "CamCircle", bundleID: "com.startse.camcircle")
         case "prompter": Companion.toggle(name: "Teleprompter", bundleID: "com.startse.teleprompter")
         case "quit": quit()
         default: break
         }
         updateStatus()
+    }
+
+    /// Diagnóstico: o painel é invisível na captura, então este é o único jeito
+    /// de inspecionar o estado de fora.
+    private func dumpState(to arg: String) {
+        let target = arg.isEmpty
+            ? NSString(string: "~/Desktop/captions-state.txt").expandingTildeInPath
+            : (arg as NSString).expandingTildeInPath
+        let rec = SFSpeechRecognizer(locale: Locale(identifier: micTranscriber.localeID))
+        let report = """
+            idioma: \(micTranscriber.localeID)
+            autorização de fala: \(SFSpeechRecognizer.authorizationStatus().rawValue) (3 = ok)
+            permissão de microfone: \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue) (3 = ok)
+            on-device suportado: \(rec?.supportsOnDeviceRecognition.description ?? "n/d")
+
+            MICROFONE
+              transcrevendo: \(micTranscriber.isListening)
+              fonte ativa: \(micSource.isRunning)
+              caracteres: \(micTranscriber.text.count)
+              erro: \(micTranscriber.lastError ?? "nenhum")
+
+            SAÍDA DO SISTEMA
+              ligado: \(systemAudio)
+              transcrevendo: \(sysTranscriber.isListening)
+              tap ativo: \(sysSource.isRunning)
+              amostras entregues: \(sysSource.deliveredFrames)
+              pico de áudio: \(String(format: "%.4f", sysSource.peakLevel)) (agora) / \(String(format: "%.4f", sysSource.peakEver)) (máximo)
+              caracteres: \(sysTranscriber.text.count)
+              streams: \(sysSource.bufferSummary)
+              erro: \(sysTranscriber.lastError ?? "nenhum")
+            """
+        try? report.write(toFile: target, atomically: true, encoding: .utf8)
     }
 
     private func pollControl() {
@@ -595,8 +722,15 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         apply(command: line.trimmingCharacters(in: .whitespaces))
     }
 
+    /// Com as duas fontes ativas, a cópia sai rotulada — senão não há como saber
+    /// quem disse o quê.
+    private var transcript: String {
+        guard systemAudio, !sysTranscriber.text.isEmpty else { return micTranscriber.text }
+        return "VOCÊ\n\(micTranscriber.text)\n\nSISTEMA\n\(sysTranscriber.text)"
+    }
+
     func copyTranscript() {
-        let text = transcriber.text
+        let text = transcript
         guard !text.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -606,7 +740,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let target = path.isEmpty
             ? NSString(string: "~/Desktop/transcricao.txt").expandingTildeInPath
             : (path as NSString).expandingTildeInPath
-        try? transcriber.text.write(toFile: target, atomically: true, encoding: .utf8)
+        try? transcript.write(toFile: target, atomically: true, encoding: .utf8)
     }
 
     func setOpacity(_ value: CGFloat) {
@@ -637,7 +771,8 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func quit() {
-        transcriber.stop()
+        stopMic()
+        stopSystem()
         savePosition()
         NSApp.terminate(nil)
     }
@@ -646,7 +781,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private enum HotKey: UInt32 {
         case toggle = 1, clear = 2, copyText = 3, pass = 4, visibility = 5
-        case dimmer = 6, brighter = 7
+        case dimmer = 6, brighter = 7, system = 8
     }
 
     private func installHotKeys() {
@@ -664,10 +799,11 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return noErr
         }, 1, &spec, nil, nil)
 
-        // ⌃⌥⌘ como nos outros dois, e em letras que eles não usam:
-        // o teleprompter tem Space ↑ ↓ R V L T C [ ] /, o CamCircle tem P.
+        // ⌃⌥⌘ como nos outros dois, em letras que eles não usam:
+        // o Teleprompter tem Space ↑ ↓ R V L T C [ ] /, o CamCircle tem P.
         let mods = UInt32(controlKey | optionKey | cmdKey)
         register(kVK_ANSI_J, mods, .toggle, "⌃⌥⌘J")
+        register(kVK_ANSI_H, mods, .system, "⌃⌥⌘H")
         register(kVK_ANSI_K, mods, .clear, "⌃⌥⌘K")
         register(kVK_ANSI_Y, mods, .copyText, "⌃⌥⌘Y")
         register(kVK_ANSI_N, mods, .pass, "⌃⌥⌘N")
@@ -690,6 +826,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func handleHotKey(_ raw: UInt32) {
         switch HotKey(rawValue: raw) {
         case .toggle: apply(command: "toggle")
+        case .system: systemAudio.toggle()
         case .clear: apply(command: "clear")
         case .copyText: copyTranscript()
         case .pass: passThrough.toggle()
@@ -717,7 +854,11 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        add(menu, transcriber.isListening ? "Parar de escutar" : "Escutar", #selector(menuToggle))
+        add(menu, micTranscriber.isListening ? "Parar de escutar você" : "Escutar você",
+            #selector(menuToggle))
+        add(menu, "Transcrever o áudio do sistema", #selector(menuSystem), on: systemAudio)
+        menu.addItem(.separator())
+
         add(menu, "Limpar", #selector(menuClear))
         add(menu, "Copiar transcrição", #selector(menuCopy))
         add(menu, "Salvar na Mesa", #selector(menuSave))
@@ -726,7 +867,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for (title, id) in [("Português (Brasil)", "pt-BR"), ("English (US)", "en-US"),
                             ("Español", "es-ES")] {
             let item = add(menu, title, #selector(menuLocale(_:)),
-                           on: transcriber.localeID == id)
+                           on: micTranscriber.localeID == id)
             item.representedObject = id
         }
         menu.addItem(.separator())
@@ -755,6 +896,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func menuToggle() { apply(command: "toggle") }
+    @objc private func menuSystem() { systemAudio.toggle() }
     @objc private func menuClear() { apply(command: "clear") }
     @objc private func menuCopy() { copyTranscript() }
     @objc private func menuSave() { apply(command: "save") }
@@ -809,6 +951,7 @@ final class CaptionHostView: NSView {
     override func keyDown(with event: NSEvent) {
         switch event.charactersIgnoringModifiers?.lowercased() ?? "" {
         case " ": captions?.apply(command: "toggle")
+        case "h": captions?.apply(command: "system")
         case "k": captions?.apply(command: "clear")
         case "c": captions?.copyTranscript()
         case "s": captions?.apply(command: "save")

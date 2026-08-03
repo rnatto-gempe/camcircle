@@ -21,5 +21,7 @@
     <string>Transcrever sua fala em legendas na tela.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Gerar as legendas localmente, sem enviar audio para servidores.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Transcrever o audio que sai do sistema, para legendar reunioes e videos.</string>
 </dict>
 </plist>

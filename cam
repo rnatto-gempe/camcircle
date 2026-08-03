@@ -120,7 +120,8 @@ cc_usage() {
 cam cc — legendas ao vivo, invisíveis na gravação de tela
 
   cam cc                    abre e começa a escutar
-  cam cc start | stop | toggle
+  cam cc start | stop | toggle       (microfone)
+  cam cc system on|off               transcreve o áudio do sistema
   cam cc clear              limpa o texto
   cam cc copy               copia a transcrição para o clipboard
   cam cc save [arquivo]     salva (padrão: ~/Desktop/transcricao.txt)
@@ -132,7 +133,8 @@ cam cc — legendas ao vivo, invisíveis na gravação de tela
   cam cc quit               fecha
 
 Atalhos globais (⌃⌥⌘, funcionam com qualquer app em foco):
-  ⌃⌥⌘J   escutar / parar
+  ⌃⌥⌘J   escutar / parar (microfone)
+  ⌃⌥⌘H   liga/desliga o áudio do sistema
   ⌃⌥⌘K   limpar o texto
   ⌃⌥⌘Y   copiar a transcrição
   ⌃⌥⌘N   cliques atravessam o painel
@@ -150,9 +152,10 @@ cc_dispatch() {
         ""|open|start) cc_ready; cc_send "start" ;;
         stop|toggle|clear|copy|hide|show|dimmer|brighter|bigger|smaller|quit)
             cc_ready; cc_send "$sub" ;;
-        locale|font|opacity|save|state)
+        locale|font|opacity|save|state|dump)
             cc_ready; cc_send "$sub ${1:-}" ;;
         pass|click) cc_ready; cc_send "pass ${1:-toggle}" ;;
+        system|sys) cc_ready; cc_send "system ${1:-toggle}" ;;
         status)
             if cc_running; then echo "rodando (pid $(pgrep -x Captions))"; else echo "parado"; fi ;;
         h|-h|--help|help) cc_usage ;;

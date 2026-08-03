@@ -363,9 +363,38 @@ acento divergente, pontuação divergente, repetição legítima de palavra na f
 - **Silêncio não é erro.** O reconhecedor devolve `No speech detected` (código 1110) em
   qualquer pausa; o app trata isso como estado normal e sobe outra requisição, em vez de
   encher o rodapé de avisos.
-- **Áudio do sistema ainda não.** Só microfone. A captura da saída do sistema é a próxima
-  etapa, via Core Audio process tap — que traz permissão de Gravação de Tela junto, e por
-  isso vive num app separado deste.
+### Áudio do sistema: captura pronta, transcrição não
+
+O Core Audio process tap está implementado e **comprovadamente captura** a saída do
+sistema, sem driver virtual e sem silenciar o que você ouve:
+
+```
+tap criado:            OK
+formato:               48000Hz, estéreo, float32 entrelaçado
+amostras entregues:    1.2M+ em ~85s
+pico do buffer cru:    0,0941  (a fonte original tinha 0,0852)
+```
+
+Os níveis batem com o áudio original, então o som certo chega ao processo.
+
+**Mas a transcrição desse áudio ainda não funciona** — o reconhecedor recebe as amostras e
+devolve zero caracteres. O microfone, no mesmo pipeline, transcreve normalmente.
+
+Já descartado por medição:
+- não é permissão (o tap é criado com status 0);
+- não é ausência de áudio (amostras chegam, com nível equivalente ao da fonte);
+- não é concorrência entre dois reconhecedores (falha também com o microfone desligado);
+- não é o `AVAudioConverter` (substituído por decimação 3:1 manual, mesmo resultado);
+- não é fase invertida no downmix (usar um canal só não mudou);
+- não é o aggregate expor o microfone do headset (há um único stream de entrada).
+
+O que ainda não foi verificado, e é o próximo passo: os arquivos de diagnóstico gravados
+com `AVAudioFile` saem malformados (`ffprobe` reporta `duration=N/A`), então **as conclusões
+tiradas deles não valem**. Antes de seguir investigando o áudio, é preciso consertar a
+gravação de diagnóstico — fechar o arquivo corretamente — e só então comparar o WAV
+capturado com o original.
+
+Ligar com `cam cc system on` ou `⌃⌥⌘H`. A coluna aparece, o tap roda, e o texto não vem.
 
 ### Por que um app separado
 
