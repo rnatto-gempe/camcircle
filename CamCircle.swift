@@ -899,7 +899,7 @@ final class HelpPanel {
 
 // MARK: - Controller
 
-final class Overlay: NSObject, NSApplicationDelegate {
+final class Overlay: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     static weak var shared: Overlay?
 
@@ -908,6 +908,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
     private let defaults = UserDefaults.standard
     private let help = HelpPanel()
     private var hotKey: EventHotKeyRef?
+    private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Overlay.shared = self
@@ -968,6 +969,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         cam.playIntro()
         installTeleprompterHotKey()
+        installStatusItem()
 
         AVCaptureDevice.requestAccess(for: .video) { granted in
             if !granted { DispatchQueue.main.async { self.showNoPermissionAlert() } }
@@ -1117,6 +1119,23 @@ final class Overlay: NSObject, NSApplicationDelegate {
     func toggleHelp() { help.toggle(relativeTo: window) }
     func hideHelp() { help.hide() }
 
+    // MARK: Item na barra de menus
+
+    /// Sem isto, o app é invisível no Dock e no switcher: quem não conhece os
+    /// atalhos não tem como configurar nem sair. É também o primeiro item que a
+    /// revisão da App Store cobra de um agente LSUIElement.
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(systemSymbolName: "person.crop.circle",
+                                    accessibilityDescription: "CamCircle")
+        item.button?.image?.isTemplate = true
+
+        let menu = NSMenu()
+        menu.delegate = self          // reconstrói a cada abertura
+        item.menu = menu
+        statusItem = item
+    }
+
     // MARK: Ponte com o teleprompter
 
     /// ⌃⌥⌘P abre/fecha o teleprompter de qualquer app. Só este atalho é global
@@ -1236,6 +1255,18 @@ final class Overlay: NSObject, NSApplicationDelegate {
     @objc private func menuMirror() { toggleMirror() }
     @objc private func menuHelp() { toggleHelp() }
     @objc private func menuTeleprompter() { toggleTeleprompter() }
+
+    /// O menu da barra usa o mesmo conteúdo do clique direito — uma fonte só,
+    /// então os dois nunca divergem. Os itens são transferidos porque um
+    /// NSMenuItem só pode pertencer a um menu.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let fresh = contextMenu()
+        menu.removeAllItems()
+        while let item = fresh.items.first {
+            fresh.removeItem(item)
+            menu.addItem(item)
+        }
+    }
     @objc private func menuQuit() { quit() }
 }
 

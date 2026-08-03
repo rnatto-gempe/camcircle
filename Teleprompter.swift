@@ -257,7 +257,7 @@ final class HelpPanel {
 
 // MARK: - Controller
 
-final class Prompter: NSObject, NSApplicationDelegate {
+final class Prompter: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     static weak var shared: Prompter?
 
@@ -275,6 +275,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
     private var scriptStamp: Date?
     private var controlStamp: Date?
     private var hotKeys: [EventHotKeyRef?] = []
+    private var statusItem: NSStatusItem?
     private var hotKeyFailures: [String] = []
 
     private var timer: Timer?
@@ -340,6 +341,7 @@ final class Prompter: NSObject, NSApplicationDelegate {
         buildWindow()
         loadScript()
         installHotKeys()
+        installStatusItem()
         startTimer()
     }
 
@@ -577,6 +579,82 @@ final class Prompter: NSObject, NSApplicationDelegate {
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
     }
+
+    // MARK: Item na barra de menus
+
+    /// O painel é invisível na captura e ignora o mouse no modo atravessa —
+    /// sem um item na barra, um usuário que não decorou os atalhos não tem
+    /// como controlar nem encerrar o app.
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(systemSymbolName: "text.alignleft",
+                                    accessibilityDescription: "Teleprompter")
+        item.button?.image?.isTemplate = true
+
+        let menu = NSMenu()
+        menu.delegate = self
+        item.menu = menu
+        statusItem = item
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        add(menu, playing ? "Pausar" : "Rolar", #selector(menuToggle))
+        add(menu, "Voltar ao início", #selector(menuTop))
+        menu.addItem(.separator())
+
+        let info = NSMenuItem(title: String(format: "Duração: %@ · %.0f px/s",
+                                            Self.clock(maxOffset / max(speed, 1)), speed),
+                              action: nil, keyEquivalent: "")
+        info.isEnabled = false
+        menu.addItem(info)
+        for (title, seconds) in [("1 minuto", 60.0), ("3 minutos", 180.0), ("5 minutos", 300.0)] {
+            let item = add(menu, "   Ajustar para \(title)", #selector(menuDuration(_:)))
+            item.representedObject = seconds
+        }
+        menu.addItem(.separator())
+
+        add(menu, "Colar texto do clipboard", #selector(menuPaste))
+        add(menu, "Abrir roteiro no editor", #selector(menuEditScript))
+        menu.addItem(.separator())
+
+        add(menu, "Cliques atravessam o painel", #selector(menuPass), on: passThrough)
+        add(menu, "Espelhar", #selector(menuMirror), on: mirrored)
+        add(menu, "Atalhos…", #selector(menuHelpItem), on: help.isVisible)
+        menu.addItem(.separator())
+
+        add(menu, Companion.isRunning(bundleID: "com.startse.camcircle")
+            ? "Fechar câmera" : "Abrir câmera", #selector(menuCamera))
+        add(menu, "Sair", #selector(menuQuitItem))
+    }
+
+    @discardableResult
+    private func add(_ menu: NSMenu, _ title: String, _ action: Selector,
+                     on: Bool? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        if let on { item.state = on ? .on : .off }
+        menu.addItem(item)
+        return item
+    }
+
+    @objc private func menuToggle() { toggle() }
+    @objc private func menuTop() { apply(command: "top") }
+    @objc private func menuDuration(_ sender: NSMenuItem) {
+        if let seconds = sender.representedObject as? Double { duration = CGFloat(seconds) }
+    }
+    @objc private func menuPaste() { apply(command: "paste") }
+    @objc private func menuEditScript() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: scriptPath))
+    }
+    @objc private func menuPass() { passThrough.toggle() }
+    @objc private func menuMirror() { mirrored.toggle() }
+    @objc private func menuHelpItem() { help.toggle(relativeTo: window) }
+    @objc private func menuCamera() {
+        Companion.toggle(name: "CamCircle", bundleID: "com.startse.camcircle")
+    }
+    @objc private func menuQuitItem() { quit() }
 
     // MARK: Atalhos globais (Carbon — não exige permissão de Acessibilidade)
 

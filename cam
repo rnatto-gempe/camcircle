@@ -5,9 +5,22 @@ set -euo pipefail
 APP="$HOME/Applications/CamCircle.app"
 TP_APP="$HOME/Applications/Teleprompter.app"
 DOMAIN="com.startse.camcircle"
-SRC="${CAMCIRCLE_SRC:-$HOME/Documents/Projects/camcircle}"
+SRC="$HOME/Documents/Projects/camcircle"
 TP_CONTROL="$HOME/.teleprompter/control"
 TP_SCRIPT="$HOME/Documents/teleprompter.txt"
+
+# Diretório de controle só do dono (700) e sem seguir symlink na escrita.
+# Sem isso, qualquer processo do usuário lê os comandos, e um symlink plantado
+# em ~/.teleprompter/control transformaria o tp_send em escrita arbitrária.
+tp_control_guard() {
+    local dir; dir="$(dirname "$TP_CONTROL")"
+    mkdir -p "$dir"
+    chmod 700 "$dir"
+    if [ -L "$TP_CONTROL" ]; then
+        echo "Recusando escrever: $TP_CONTROL é um symlink." >&2
+        exit 1
+    fi
+}
 
 is_running() { pgrep -x CamCircle >/dev/null 2>&1; }
 
@@ -55,8 +68,9 @@ tp_running() { pgrep -x Teleprompter >/dev/null 2>&1; }
 # O número aleatório na segunda linha garante que o mtime mude mesmo repetindo
 # o mesmo comando.
 tp_send() {
-    mkdir -p "$(dirname "$TP_CONTROL")"
+    tp_control_guard
     printf '%s\n%s\n' "$*" "$RANDOM$RANDOM" > "$TP_CONTROL"
+    chmod 600 "$TP_CONTROL"
 }
 
 tp_start() {
@@ -281,7 +295,10 @@ case "${1:-start}" in
         start_app
         ;;
     build)
-        [ -x "$SRC/build.sh" ] || { echo "fonte não encontrado em $SRC"; exit 1; }
+        # Caminho fixo, não configurável por ambiente: um CAMCIRCLE_SRC apontando
+        # para outro diretório viraria execução de código arbitrário no `cam build`.
+        [ -x "$SRC/build.sh" ] && [ -f "$SRC/CamCircle.swift" ] \
+            || { echo "fonte não encontrado em $SRC"; exit 1; }
         stop_app
         "$SRC/build.sh"
         mkdir -p "$HOME/Applications"

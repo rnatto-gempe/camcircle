@@ -27,7 +27,12 @@ build_app() {
 
     echo "==> $name: montando o bundle"
     rm -rf "$app"
-    mkdir -p "$app/Contents/MacOS"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+    # Ícone: a App Store rejeita antes de qualquer outra análise se faltar.
+    if [ -f "$DIR/icons/$name.icns" ]; then
+        cp "$DIR/icons/$name.icns" "$app/Contents/Resources/$name.icns"
+    fi
 
     cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,6 +49,11 @@ build_app() {
     <key>LSMinimumSystemVersion</key>    <string>13.0</string>
     <key>LSUIElement</key>               <true/>
     <key>NSHighResolutionCapable</key>   <true/>
+    <key>CFBundleIconFile</key>          <string>$name</string>
+    <key>LSApplicationCategoryType</key> <string>public.app-category.video</string>
+    <key>NSHumanReadableCopyright</key>  <string>MIT License</string>
+    <!-- Exigido pelo App Store Connect: nenhum dos apps usa criptografia. -->
+    <key>ITSAppUsesNonExemptEncryption</key> <false/>
 $extra
 </dict>
 </plist>
