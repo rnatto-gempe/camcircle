@@ -18,7 +18,17 @@ cat > "$CAM_ENT" <<'PLIST'
 </dict>
 </plist>
 PLIST
-trap 'rm -f "$CAM_ENT"' EXIT
+CC_ENT="$(mktemp -t captions-ent).plist"
+cat > "$CC_ENT" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>
+PLIST
+trap 'rm -f "$CAM_ENT" "$CC_ENT"' EXIT
 
 # build_app <nome> <fonte.swift> <bundle-id> <frameworks> [entitlements] [chaves-extra-do-plist]
 build_app() {
@@ -92,7 +102,16 @@ build_app CamCircle CamCircle.swift com.startse.camcircle \
 build_app Teleprompter Teleprompter.swift com.startse.teleprompter \
     "-framework AppKit -framework Carbon"
 
+build_app Captions Captions.swift com.startse.captions \
+    "-framework AppKit -framework AVFoundation -framework Carbon -framework Speech" \
+    "$CC_ENT" \
+    '    <key>NSMicrophoneUsageDescription</key>
+    <string>Transcrever sua fala em legendas na tela.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Gerar as legendas localmente, sem enviar audio para servidores.</string>'
+
 echo
 echo "Pronto:"
 echo "  $DIR/CamCircle.app"
 echo "  $DIR/Teleprompter.app"
+echo "  $DIR/Captions.app"

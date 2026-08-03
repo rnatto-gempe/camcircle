@@ -5,6 +5,8 @@ Dois overlays nativos para gravar a tela no macOS, sem instalar nada de terceiro
 - **CamCircle** — sua webcam num círculo flutuante, sempre por cima
 - **Teleprompter** — roteiro rolando na tela, **invisível na gravação e no
   compartilhamento de tela**
+- **Captions** — legendas ao vivo da sua fala, transcritas **on-device**, também
+  invisíveis na gravação
 
 Webcam num círculo flutuante, sempre por cima de tudo, para gravar a tela com seu rosto —
 tipo o overlay de câmera do Loom ou do mmhmm, mas nativo e sem instalar nada de terceiros.
@@ -298,6 +300,78 @@ O `Companion.swift` é compilado nos dois binários. Ele procura o bundle irmão
 lado do app que está rodando — o que cobre tanto os dois instalados em `~/Applications`
 quanto os dois no diretório do fonte — e depois em `~/Applications` e `/Applications`.
 Abre com `activates = false`, para não tirar o foco do app que você está usando.
+
+## Captions — legendas ao vivo
+
+Transcreve o que você fala em tempo real, **inteiramente on-device**, e mostra num painel
+que **não aparece na gravação nem no compartilhamento de tela**. Você lê as legendas, quem
+assiste não vê.
+
+```bash
+cam cc            # abre e começa a escutar
+cam cc copy       # copia a transcrição
+cam cc h          # todos os comandos
+```
+
+Nenhum áudio sai da máquina: `requiresOnDeviceRecognition = true`, sem exceção.
+
+### Requisito
+
+O Ditado precisa estar ativo em **Ajustes do Sistema › Teclado › Ditado**, no idioma
+escolhido — é de lá que vem o modelo local. Sem isso o reconhecedor responde
+`"Siri and Dictation are disabled"`. O Siri **não** precisa estar ligado; testei com ele
+desativado e funciona.
+
+### Atalhos globais
+
+| | |
+|---|---|
+| `⌃⌥⌘J` | escutar / parar |
+| `⌃⌥⌘K` | limpar o texto |
+| `⌃⌥⌘Y` | copiar a transcrição |
+| `⌃⌥⌘N` | cliques atravessam o painel |
+| `⌃⌥⌘G` | esconde / mostra |
+| `⌃⌥⌘-` `⌃⌥⌘=` | menos / mais opaco |
+
+### O problema difícil: sessões longas
+
+O `SFSpeechRecognizer` não sustenta uma sessão contínua. Medi: uma requisição com 100s de
+áudio devolveu **89 palavras**, menos que as 118 que os primeiros 25s renderam, e de um
+trecho diferente — ou seja, ela cobre só uma janela, não o todo.
+
+A saída é rotacionar a requisição, e é aí que implementações ingênuas falham: encerrar a
+antiga e abrir a nova em sequência perde o áudio do vão, e não tratar a emenda duplica
+palavras na tela.
+
+Aqui a virada usa **sobreposição**: a requisição nova começa a receber áudio 2 segundos
+**antes** de a antiga ser encerrada, então nada cai no vão. O trecho que as duas ouviram é
+removido por casamento de palavras, comparando sem caixa, sem acento e sem pontuação —
+porque o reconhecedor varia justamente esses detalhes entre duas passadas pelo mesmo áudio.
+O casamento maior tem preferência: repetir palavra na tela é pior que perder uma que já
+havia sido entregue.
+
+A função de costura tem teste próprio, cobrindo os casos que quebram a versão ingênua:
+acento divergente, pontuação divergente, repetição legítima de palavra na fala
+(`"ficou muito muito bom"`) e sobreposição total.
+
+### Limites que você deve conhecer
+
+- **A precisão é média.** Serve muito bem como legenda de apoio ao vivo. Não serve para
+  transcrição publicável sem revisão.
+- **Não sai pontuação.** Liguei `addsPunctuation = true` e a saída em pt-BR continuou sem
+  pontuação alguma — a chave parece valer só para inglês ou só no modo servidor.
+- **Silêncio não é erro.** O reconhecedor devolve `No speech detected` (código 1110) em
+  qualquer pausa; o app trata isso como estado normal e sobe outra requisição, em vez de
+  encher o rodapé de avisos.
+- **Áudio do sistema ainda não.** Só microfone. A captura da saída do sistema é a próxima
+  etapa, via Core Audio process tap — que traz permissão de Gravação de Tela junto, e por
+  isso vive num app separado deste.
+
+### Por que um app separado
+
+O CamCircle pede câmera; o Teleprompter não pede nada. Juntar microfone e reconhecimento
+de fala em qualquer um dos dois destruiria essa propriedade — o Teleprompter hoje pode ser
+auditado em cinco minutos. As legendas moram no próprio bundle, com as próprias permissões.
 
 ## Segurança e privacidade
 

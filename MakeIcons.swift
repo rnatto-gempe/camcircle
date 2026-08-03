@@ -110,6 +110,47 @@ func teleprompterIcon(_ side: CGFloat) -> NSImage {
     }
 }
 
+/// Captions: balão de legenda com duas linhas, uma confirmada e uma provisória.
+func captionsIcon(_ side: CGFloat) -> NSImage {
+    render(side) { plate, side in
+        let accent = NSColor(srgbRed: 0.42, green: 0.78, blue: 0.98, alpha: 1)
+        let bubble = plate.insetBy(dx: plate.width * 0.13, dy: plate.width * 0.20)
+
+        // Balão
+        accent.withAlphaComponent(0.18).setFill()
+        let body = NSBezierPath(roundedRect: bubble,
+                                xRadius: bubble.height * 0.26,
+                                yRadius: bubble.height * 0.26)
+        body.fill()
+        accent.withAlphaComponent(0.85).setStroke()
+        body.lineWidth = max(1, side * 0.018)
+        body.stroke()
+
+        // Rabicho do balão
+        accent.withAlphaComponent(0.85).setFill()
+        let tail = NSBezierPath()
+        let tx = bubble.minX + bubble.width * 0.26
+        tail.move(to: CGPoint(x: tx, y: bubble.minY + 1))
+        tail.line(to: CGPoint(x: tx + bubble.width * 0.14, y: bubble.minY + 1))
+        tail.line(to: CGPoint(x: tx, y: bubble.minY - bubble.height * 0.20))
+        tail.close()
+        tail.fill()
+
+        // Linha confirmada (branca) e provisória (apagada)
+        let h = max(1, bubble.height * 0.11)
+        let inset = bubble.width * 0.14
+        NSColor.white.setFill()
+        let top = CGRect(x: bubble.minX + inset, y: bubble.midY + h * 0.6,
+                         width: bubble.width - inset * 2, height: h)
+        NSBezierPath(roundedRect: top, xRadius: h / 2, yRadius: h / 2).fill()
+
+        NSColor.white.withAlphaComponent(0.40).setFill()
+        let bottom = CGRect(x: bubble.minX + inset, y: bubble.midY - h * 1.9,
+                            width: (bubble.width - inset * 2) * 0.58, height: h)
+        NSBezierPath(roundedRect: bottom, xRadius: h / 2, yRadius: h / 2).fill()
+    }
+}
+
 // MARK: - Escrita
 
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "."
@@ -140,3 +181,4 @@ func write(_ name: String, _ maker: (CGFloat) -> NSImage) {
 
 write("CamCircle", camCircleIcon)
 write("Teleprompter", teleprompterIcon)
+write("Captions", captionsIcon)

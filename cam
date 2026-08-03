@@ -8,6 +8,8 @@ DOMAIN="com.startse.camcircle"
 SRC="$HOME/Documents/Projects/camcircle"
 TP_CONTROL="$HOME/.teleprompter/control"
 TP_SCRIPT="$HOME/Documents/teleprompter.txt"
+CC_APP="$HOME/Applications/Captions.app"
+CC_CONTROL="$HOME/.teleprompter/captions-control"
 
 # Diretório de controle só do dono (700) e sem seguir symlink na escrita.
 # Sem isso, qualquer processo do usuário lê os comandos, e um symlink plantado
@@ -91,6 +93,71 @@ tp_ready() {
         sleep 0.2
     done
     sleep 0.5   # tempo de montar a janela e começar a ler o arquivo de controle
+}
+
+cc_running() { pgrep -x Captions >/dev/null 2>&1; }
+
+cc_send() {
+    local dir; dir="$(dirname "$CC_CONTROL")"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    if [ -L "$CC_CONTROL" ]; then
+        echo "Recusando escrever: $CC_CONTROL é um symlink." >&2; exit 1
+    fi
+    printf '%s\n%s\n' "$*" "$RANDOM$RANDOM" > "$CC_CONTROL"
+    chmod 600 "$CC_CONTROL"
+}
+
+cc_ready() {
+    if cc_running; then return; fi
+    [ -d "$CC_APP" ] || { echo "Captions.app não encontrado. Rode:  cam build"; exit 1; }
+    open "$CC_APP"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do cc_running && break; sleep 0.2; done
+    sleep 0.6
+}
+
+cc_usage() {
+    cat <<'TXT'
+cam cc — legendas ao vivo, invisíveis na gravação de tela
+
+  cam cc                    abre e começa a escutar
+  cam cc start | stop | toggle
+  cam cc clear              limpa o texto
+  cam cc copy               copia a transcrição para o clipboard
+  cam cc save [arquivo]     salva (padrão: ~/Desktop/transcricao.txt)
+  cam cc locale en-US       troca o idioma (pt-BR, en-US, es-ES...)
+  cam cc font 24            tamanho da fonte
+  cam cc opacity 0.7        opacidade
+  cam cc pass on|off        cliques atravessam o painel
+  cam cc hide | show
+  cam cc quit               fecha
+
+Atalhos globais (⌃⌥⌘, funcionam com qualquer app em foco):
+  ⌃⌥⌘J   escutar / parar
+  ⌃⌥⌘K   limpar o texto
+  ⌃⌥⌘Y   copiar a transcrição
+  ⌃⌥⌘N   cliques atravessam o painel
+  ⌃⌥⌘G   esconde / mostra o painel
+  ⌃⌥⌘- ⌃⌥⌘=   menos / mais opaco
+
+Requer o Ditado ativo em Ajustes do Sistema › Teclado › Ditado, no idioma
+escolhido — é de lá que vem o modelo on-device. Nenhum áudio sai da máquina.
+TXT
+}
+
+cc_dispatch() {
+    local sub="${1:-open}"; shift || true
+    case "$sub" in
+        ""|open|start) cc_ready; cc_send "start" ;;
+        stop|toggle|clear|copy|hide|show|dimmer|brighter|bigger|smaller|quit)
+            cc_ready; cc_send "$sub" ;;
+        locale|font|opacity|save|state)
+            cc_ready; cc_send "$sub ${1:-}" ;;
+        pass|click) cc_ready; cc_send "pass ${1:-toggle}" ;;
+        status)
+            if cc_running; then echo "rodando (pid $(pgrep -x Captions))"; else echo "parado"; fi ;;
+        h|-h|--help|help) cc_usage ;;
+        *) echo "subcomando desconhecido: $sub"; cc_usage; exit 1 ;;
+    esac
 }
 
 tp_usage() {
@@ -228,6 +295,8 @@ cam — webcam em círculo flutuante para gravação de tela
   cam tp paste       usa o texto do clipboard como roteiro
   cam tp camera      abre/fecha o círculo (mesmo que ⌃⌥⌘C)
   cam tp h           todos os comandos e atalhos do teleprompter
+  cam cc             legendas ao vivo do microfone, on-device
+  cam cc h           todos os comandos e atalhos das legendas
 
 Um app abre o outro sem terminal:
   ⌃⌥⌘P  do círculo (ou de qualquer app) abre/fecha o teleprompter
@@ -249,6 +318,10 @@ case "${1:-start}" in
     tp)
         shift
         tp_dispatch "$@"
+        ;;
+    cc)
+        shift
+        cc_dispatch "$@"
         ;;
     both)
         start_app
@@ -303,9 +376,11 @@ case "${1:-start}" in
         "$SRC/build.sh"
         mkdir -p "$HOME/Applications"
         pkill -x Teleprompter 2>/dev/null || true
-        rm -rf "$APP" "$TP_APP"
+        pkill -x Captions 2>/dev/null || true
+        rm -rf "$APP" "$TP_APP" "$CC_APP"
         cp -R "$SRC/CamCircle.app" "$APP"
         cp -R "$SRC/Teleprompter.app" "$TP_APP"
+        cp -R "$SRC/Captions.app" "$CC_APP"
         # Atualiza também este próprio script, senão ele fica defasado do fonte.
         if [ -f "$SRC/cam" ] && [ "$SRC/cam" != "$0" ]; then
             install -m 755 "$SRC/cam" "$0"
