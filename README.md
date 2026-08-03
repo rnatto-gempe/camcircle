@@ -401,12 +401,33 @@ Outras armadilhas confirmadas, todas escondidas atrás de `noErr`:
 - **Não mexa em `isExclusive`** depois de `init(stereoGlobalTapButExcludeProcesses:)` — ele
   é o flag de direção, e invertê-lo troca "excluir estes PIDs" por "incluir só estes".
 
+#### Espera adaptativa entre segmentos
+
+Cada requisição encerra no silêncio e é preciso abrir outra. Esperar antes de reabrir fazia
+**48% do áudio cair no vão** — medido. Mas reabrir sempre na hora vira laço numa sala em
+silêncio: chegou a 92 segmentos em 26 segundos.
+
+A saída é olhar se o segmento que morreu tinha fala em curso:
+
+- **viu algum parcial** → reabre em 0,02s, porque a frase está em andamento;
+- **morreu sem nenhum parcial** → recua para 0,5s, porque é silêncio.
+
+O áudio que ainda cai no vão é guardado e devolvido na abertura seguinte, então nada se
+perde. O ganho é grande na coerência, com o mesmo trecho de áudio:
+
+```
+antes: "E criamos o · Eu vou mostrar aqui · Aqui dentro da plataforma dentro · Preenchido"
+agora: "...o cliente consegue ter acesso ao diagnóstico que ele fez, no meu caso já está
+        preenchido, e o diagnóstico ele é embasado em alguns pilares aqui né, então o
+        cliente é avaliado além desses seis pilares, no total de 10 pilares..."
+```
+
 #### Limites
 
-A transcrição sai **fragmentada**: frases curtas, com palavras perdidas entre segmentos. O
-`SFSpeechRecognizer` encerra cada requisição no silêncio e é preciso abrir outra, e o áudio
-do vão é reaproveitado mas o contexto da frase se perde. Serve como legenda de apoio ao
-vivo; não serve como transcrição fiel.
+A precisão depende muito da qualidade do áudio — testar com um arquivo acelerado em 2x
+produz saída picada e engana o diagnóstico. Em velocidade normal, frases longas saem quase
+literais. Ainda assim é legenda de apoio ao vivo, não transcrição fiel: palavras se perdem
+nas viradas de segmento, e não sai pontuação em português.
 
 ### Por que um app separado
 

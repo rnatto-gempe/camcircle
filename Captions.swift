@@ -58,6 +58,9 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     private(set) var finalsSeen = 0
     private(set) var errorsSeen = 0
     private(set) var segmentsOpened = 0
+    /// Parciais vistos no segmento atual. Distingue "morreu com fala em curso"
+    /// de "morreu no silêncio", e é isso que define a espera para reabrir.
+    private var partialsThisSegment = 0
     private(set) var lastResultText = ""
     /// Códigos de erro vistos, com contagem. Suprimir erros "de rotina" sem
     /// registrá-los escondeu exatamente o que explicava a falha.
@@ -136,6 +139,7 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         req.addsPunctuation = true
         request = req
         segmentsOpened += 1
+        partialsThisSegment = 0
 
         // Devolve o áudio do vão antes de qualquer coisa nova, para a frase
         // começar do início e não do meio.
@@ -171,11 +175,13 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
                         self.publish()
                     }
                     self.onStateChange?()
-                    // Silêncio: espera mais antes de reabrir, senão são dezenas
-                    // de segmentos por segundo sem nenhum ganho.
-                    let silence = ns.code == 1110
-                        || ns.localizedDescription.lowercased().contains("no speech")
-                    self.scheduleNextSegment(after: silence ? 0.7 : 0.15)
+
+                    // Espera adaptativa. Se havia fala em curso, reabre na hora:
+                    // esperar aqui é o que fazia 48% do áudio cair no vão,
+                    // medido. Se o segmento morreu sem nenhum parcial, a sala
+                    // está em silêncio e vale recuar para não virar laço.
+                    let hadSpeech = self.partialsThisSegment > 0
+                    self.scheduleNextSegment(after: hadSpeech ? 0.02 : 0.5)
                     return
                 }
 
@@ -189,9 +195,10 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
                     if !trimmed.isEmpty { self.append(segment: trimmed) }
                     self.partial = ""
                     self.publish()
-                    self.scheduleNextSegment()
+                    self.scheduleNextSegment(after: 0.02)
                 } else {
                     self.partialsSeen += 1
+                    self.partialsThisSegment += 1
                     self.partial = text
                     if self.lastError != nil { self.lastError = nil; self.onStateChange?() }
                     self.publish()
