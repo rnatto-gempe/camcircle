@@ -1,0 +1,131 @@
+#!/bin/bash
+# cam — controla o CamCircle (webcam em círculo flutuante) pelo terminal.
+set -euo pipefail
+
+APP="$HOME/Applications/CamCircle.app"
+DOMAIN="com.startse.camcircle"
+SRC="${CAMCIRCLE_SRC:-$HOME/Documents/Projects/camcircle}"
+
+is_running() { pgrep -x CamCircle >/dev/null 2>&1; }
+
+stop_app() {
+    if is_running; then
+        pkill -x CamCircle || true
+        for _ in $(seq 1 20); do is_running || break; done
+    fi
+}
+
+start_app() {
+    if [ ! -d "$APP" ]; then
+        echo "CamCircle.app não encontrado em $APP"
+        echo "Rode:  cam build"
+        exit 1
+    fi
+    open "$APP"
+}
+
+# Liga todos os efeitos. Precisa ser feito com o app fechado,
+# porque as preferências são lidas na abertura.
+enable_all() {
+    defaults write "$DOMAIN" ringStyle -int 2      # anel gradiente animado
+    defaults write "$DOMAIN" theme     -int 0      # Aurora
+    defaults write "$DOMAIN" grade     -bool true  # realce studio
+    defaults write "$DOMAIN" shadow    -bool true  # sombra suave
+    defaults write "$DOMAIN" voice     -bool true  # anel reage à voz
+    defaults write "$DOMAIN" framing   -bool true  # enquadramento automático
+    defaults write "$DOMAIN" feather   -bool false # borda esfumaçada desligada
+    defaults write "$DOMAIN" corner    -float 0.5  # círculo
+    defaults write "$DOMAIN" mirror    -bool true
+    defaults write "$DOMAIN" zoom      -float 1.3  # já entra enquadrado
+}
+
+usage() {
+    cat <<'TXT'
+cam — webcam em círculo flutuante para gravação de tela
+
+  cam                abre o círculo
+  cam all            liga todos os efeitos e abre
+  cam clean          versão discreta (sem anel, sem voz) e abre
+  cam stop           fecha
+  cam restart        fecha e abre de novo
+  cam zoom <valor>   define o zoom (1.0 a 3.0) e reabre — ex: cam zoom 1.5
+  cam size <px>      define o diâmetro e reabre — ex: cam size 320
+  cam build          recompila o app a partir do fonte
+  cam reset          apaga as preferências (tamanho, posição, efeitos)
+  cam status         mostra se está rodando e as configurações atuais
+
+Atalhos com o círculo em foco:
+  arrastar move · scroll redimensiona · option+scroll dá zoom
+  P depois clique = centraliza naquele ponto (ou option+clique direto)
+  setas enquadram fino · 0 volta ao padrão · Z zoom
+  S formato · B anel · T cor · D sombra · F borda esfumaçada · L realce
+  V voz · A auto-enquadre · M espelho · C troca câmera · Q sai
+TXT
+}
+
+case "${1:-start}" in
+    start|"")
+        start_app
+        ;;
+    all)
+        stop_app
+        enable_all
+        start_app
+        echo "Todos os efeitos ligados."
+        ;;
+    clean)
+        stop_app
+        defaults write "$DOMAIN" ringStyle -int 0
+        defaults write "$DOMAIN" voice   -bool false
+        defaults write "$DOMAIN" grade   -bool true
+        defaults write "$DOMAIN" shadow  -bool true
+        start_app
+        echo "Modo discreto."
+        ;;
+    stop)
+        stop_app
+        echo "Fechado."
+        ;;
+    restart)
+        stop_app
+        start_app
+        ;;
+    zoom)
+        [ $# -ge 2 ] || { echo "uso: cam zoom 1.5"; exit 1; }
+        stop_app
+        defaults write "$DOMAIN" zoom -float "$2"
+        start_app
+        ;;
+    size)
+        [ $# -ge 2 ] || { echo "uso: cam size 320"; exit 1; }
+        stop_app
+        defaults write "$DOMAIN" size -float "$2"
+        start_app
+        ;;
+    build)
+        [ -x "$SRC/build.sh" ] || { echo "fonte não encontrado em $SRC"; exit 1; }
+        stop_app
+        "$SRC/build.sh"
+        mkdir -p "$HOME/Applications"
+        rm -rf "$APP"
+        cp -R "$SRC/CamCircle.app" "$APP"
+        echo "Instalado em $APP"
+        ;;
+    reset)
+        stop_app
+        defaults delete "$DOMAIN" 2>/dev/null || true
+        echo "Preferências apagadas."
+        ;;
+    status)
+        if is_running; then echo "rodando (pid $(pgrep -x CamCircle))"; else echo "parado"; fi
+        defaults read "$DOMAIN" 2>/dev/null || echo "(sem preferências salvas)"
+        ;;
+    h|-h|--help|help)
+        usage
+        ;;
+    *)
+        echo "opção desconhecida: $1"
+        usage
+        exit 1
+        ;;
+esac
