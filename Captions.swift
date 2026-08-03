@@ -343,7 +343,17 @@ final class ColumnsView: NSView {
     private let sysHeader = NSTextField(labelWithString: "SISTEMA")
     private let divider = NSBox()
 
-    var showsSystem = false { didSet { needsLayout = true; applyVisibility() } }
+    var showsSystem = false {
+        didSet {
+            applyVisibility()
+            // `needsLayout` apenas agenda, e a coluna do sistema ficava com
+            // frame 0x0 até algo forçar um novo layout — era por isso que
+            // esconder e mostrar a janela "fazia funcionar". O texto estava lá;
+            // a view é que não tinha tamanho.
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -503,6 +513,8 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             columns.showsSystem = systemAudio
             defaults.set(systemAudio, forKey: Pref.systemAudio)
             systemAudio ? startSystem() : stopSystem()
+            // Layout antes de desenhar: sem tamanho, não há onde o texto caber.
+            window.contentView?.layoutSubtreeIfNeeded()
             render()
         }
     }
@@ -652,6 +664,12 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Texto
 
     private func render() {
+        // Rede de segurança: se a coluna ainda não tem largura, o texto não
+        // apareceria. Força o layout antes de preencher.
+        if columns.showsSystem, columns.sysScroll.frame.width < 1 {
+            columns.needsLayout = true
+            columns.layoutSubtreeIfNeeded()
+        }
         fill(columns.micText, committed: micCommitted, partial: micPartial)
         fill(columns.sysText, committed: sysCommitted, partial: sysPartial)
         scrollToBottom(columns.micScroll, columns.micText)
