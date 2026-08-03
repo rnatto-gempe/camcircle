@@ -46,7 +46,8 @@ ao **microfone**. Negou por engano? Ajustes do Sistema › Privacidade e Seguran
 
 ```bash
 cam                # abre o círculo
-cam all            # liga todos os efeitos e abre
+cam all            # liga os efeitos visuais e abre
+cam all --voice    # idem, com o anel reativo à voz (pede microfone)
 cam clean          # versão discreta (sem anel, sem voz)
 cam stop           # fecha
 cam restart
@@ -153,6 +154,31 @@ cantos.
 O `build.sh` monta o `.app` na mão — `Info.plist` com `LSUIElement`,
 `NSCameraUsageDescription` e `NSMicrophoneUsageDescription` — e assina ad-hoc com
 `codesign -s -` para o macOS manter a permissão de câmera entre builds.
+
+## Segurança e privacidade
+
+O app é assinado com **hardened runtime** (`--options runtime`) e entitlements mínimas —
+só `device.camera` e `device.audio-input`:
+
+```bash
+codesign -dv ~/Applications/CamCircle.app   # flags=0x10002(adhoc,runtime)
+```
+
+Isso não é detalhe burocrático. Sem o hardened runtime, o `dyld` honra
+`DYLD_INSERT_LIBRARIES`: qualquer processo rodando como o seu usuário poderia injetar uma
+dylib no app e **herdar a permissão de câmera já concedida**, capturando vídeo sem disparar
+nenhum novo pedido de autorização. Com o runtime ligado, o dyld ignora as variáveis `DYLD_*`
+e a library validation bloqueia dylibs de outra origem.
+
+Outras decisões:
+
+- **Nenhuma rede.** Não há `URLSession`, socket ou telemetria no código.
+- **Nada é gravado.** Não existe `AVAssetWriter` nem `AVCaptureMovieFileOutput` — o app só
+  exibe o vídeo. Os frames vivem na camada de preview e morrem nela.
+- **Microfone desligado por padrão.** O efeito de voz é opt-in (`cam all --voice` ou `V`).
+  Quando ligado, só o nível RMS é calculado em memória; o áudio não é gravado nem enviado.
+- **Sem `sudo`.** A instalação escreve apenas em `~/Applications` e `~/.local/bin`.
+- O `.app` compilado não é distribuído neste repo — você compila do fonte.
 
 ## Estrutura
 

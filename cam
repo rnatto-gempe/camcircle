@@ -24,19 +24,26 @@ start_app() {
     open "$APP"
 }
 
-# Liga todos os efeitos. Precisa ser feito com o app fechado,
+# Liga os efeitos visuais. Precisa ser feito com o app fechado,
 # porque as preferências são lidas na abertura.
+#
+# O efeito de voz fica DE FORA por padrão: ele exige acesso ao microfone, e um
+# overlay de câmera não deveria pedir o microfone sem você ter pedido o efeito.
+# Use `cam all --voice` para incluí-lo.
 enable_all() {
-    defaults write "$DOMAIN" ringStyle -int 2      # anel gradiente animado
-    defaults write "$DOMAIN" theme     -int 0      # Aurora
-    defaults write "$DOMAIN" grade     -bool true  # realce studio
-    defaults write "$DOMAIN" shadow    -bool true  # sombra suave
-    defaults write "$DOMAIN" voice     -bool true  # anel reage à voz
-    defaults write "$DOMAIN" framing   -bool true  # enquadramento automático
-    defaults write "$DOMAIN" feather   -bool false # borda esfumaçada desligada
-    defaults write "$DOMAIN" corner    -float 0.5  # círculo
+    local voice="false"
+    [ "${1:-}" = "--voice" ] && voice="true"
+
+    defaults write "$DOMAIN" ringStyle -int 2         # anel gradiente animado
+    defaults write "$DOMAIN" theme     -int 0         # Aurora
+    defaults write "$DOMAIN" grade     -bool true     # realce studio
+    defaults write "$DOMAIN" shadow    -bool true     # sombra suave
+    defaults write "$DOMAIN" framing   -bool true     # enquadramento automático
+    defaults write "$DOMAIN" feather   -bool false    # borda esfumaçada desligada
+    defaults write "$DOMAIN" corner    -float 0.5     # círculo
     defaults write "$DOMAIN" mirror    -bool true
-    defaults write "$DOMAIN" zoom      -float 1.3  # já entra enquadrado
+    defaults write "$DOMAIN" zoom      -float 1.3     # já entra enquadrado
+    defaults write "$DOMAIN" voice     -bool "$voice" # anel reage à voz
 }
 
 usage() {
@@ -44,7 +51,8 @@ usage() {
 cam — webcam em círculo flutuante para gravação de tela
 
   cam                abre o círculo
-  cam all            liga todos os efeitos e abre
+  cam all            liga os efeitos visuais e abre
+  cam all --voice    idem, incluindo o anel reativo à voz (pede microfone)
   cam clean          versão discreta (sem anel, sem voz) e abre
   cam stop           fecha
   cam restart        fecha e abre de novo
@@ -69,9 +77,13 @@ case "${1:-start}" in
         ;;
     all)
         stop_app
-        enable_all
+        enable_all "${2:-}"
         start_app
-        echo "Todos os efeitos ligados."
+        if [ "${2:-}" = "--voice" ]; then
+            echo "Efeitos ligados, incluindo o anel reativo à voz (pede microfone)."
+        else
+            echo "Efeitos visuais ligados. Para o anel reagir à voz: cam all --voice"
+        fi
         ;;
     clean)
         stop_app
@@ -109,6 +121,10 @@ case "${1:-start}" in
         mkdir -p "$HOME/Applications"
         rm -rf "$APP"
         cp -R "$SRC/CamCircle.app" "$APP"
+        # Atualiza também este próprio script, senão ele fica defasado do fonte.
+        if [ -f "$SRC/cam" ] && [ "$SRC/cam" != "$0" ]; then
+            install -m 755 "$SRC/cam" "$0"
+        fi
         echo "Instalado em $APP"
         ;;
     reset)

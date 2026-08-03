@@ -39,8 +39,31 @@ swiftc -O \
     "$DIR/CamCircle.swift" \
     -o "$APP/Contents/MacOS/CamCircle"
 
-echo "==> Assinando (ad-hoc, para a permissão de câmera ficar estável)"
-codesign --force --sign - --identifier com.startse.camcircle "$APP"
+echo "==> Gerando entitlements"
+# Sob hardened runtime, o acesso a câmera e microfone precisa ser declarado.
+ENT="$(mktemp -t camcircle-ent).plist"
+cat > "$ENT" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.camera</key>     <true/>
+    <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>
+PLIST
+
+# Hardened runtime (--options runtime) faz o dyld ignorar DYLD_INSERT_LIBRARIES e
+# ativa library validation. Sem isso, qualquer processo rodando como o usuário
+# poderia injetar código no app e herdar a permissão de câmera já concedida.
+echo "==> Assinando (ad-hoc + hardened runtime)"
+codesign --force --options runtime --entitlements "$ENT" \
+    --sign - --identifier com.startse.camcircle "$APP"
+rm -f "$ENT"
+
+echo "==> Conferindo a assinatura"
+codesign --verify --strict --verbose=1 "$APP"
+codesign -dv "$APP" 2>&1 | grep -E "flags=" | sed 's/^/    /'
 
 echo
 echo "Pronto: $APP"
