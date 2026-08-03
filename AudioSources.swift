@@ -160,6 +160,8 @@ final class SystemAudioSource: AudioSource {
 
     /// Um registro por stream de entrada do aggregate: canais, bytes e pico.
     private(set) var bufferReport: [(channels: Int, bytes: Int, peak: Float)] = []
+    /// Qual dispositivo virou referência de clock, para diagnóstico.
+    private(set) var clockDevice = "-"
 
     var bufferSummary: String {
         guard !bufferReport.isEmpty else { return "nenhum buffer visto ainda" }
@@ -196,7 +198,7 @@ final class SystemAudioSource: AudioSource {
     func start(_ completion: @escaping (String?) -> Void) {
         guard !isRunning else { completion(nil); return }
 
-        guard let outputUID = Self.defaultOutputUID() else {
+        guard let outputUID = Self.clockReferenceUID() else {
             completion("Não foi possível identificar a saída de áudio padrão.")
             return
         }
@@ -214,6 +216,7 @@ final class SystemAudioSource: AudioSource {
             return
         }
         tapID = tap
+        clockDevice = outputUID
 
         guard let tapUID = Self.stringProperty(tap, kAudioTapPropertyUID) else {
             cleanup()
@@ -401,6 +404,95 @@ final class SystemAudioSource: AudioSource {
     deinit { cleanup() }
 
     // MARK: Leitura de propriedades
+
+    /// Escolhe o dispositivo que serve de referência de clock ao aggregate.
+    ///
+    /// O tap é global: captura toda a saída do sistema independente de qual
+    /// dispositivo entra no aggregate. Então o clock pode vir de outro lugar — e
+    /// precisa vir, quando a saída padrão compartilha o codec com o microfone.
+    ///
+    /// No conector de fone do Mac, `BuiltInHeadphoneOutputDevice` e
+    /// `BuiltInHeadphoneInputDevice` são o MESMO hardware (modelos "Codec Output"
+    /// e "Codec Input"). Colocar essa saída no aggregate faz o Core Audio tomar
+    /// conta do codec e derrubar a entrada — o microfone perde canal.
+    private static func clockReferenceUID() -> String? {
+        let inputModel = defaultInputID().flatMap { stringProperty($0, kAudioDevicePropertyModelUID) }
+        let inputCodec = inputModel?.replacingOccurrences(of: " Input", with: "")
+
+        guard let outputID = defaultOutputID(),
+              let outputUID = stringProperty(outputID, kAudioDevicePropertyDeviceUID) else { return nil }
+        let outputModel = stringProperty(outputID, kAudioDevicePropertyModelUID)
+        let outputCodec = outputModel?.replacingOccurrences(of: " Output", with: "")
+
+        // Codec diferente do microfone: a saída padrão serve.
+        if inputCodec == nil || outputCodec == nil || inputCodec != outputCodec {
+            return outputUID
+        }
+
+        // Mesmo codec: procura outra saída para não tocar no hardware do microfone.
+        for candidate in allDeviceIDs() where candidate != outputID {
+            guard outputChannels(candidate) > 0,
+                  let uid = stringProperty(candidate, kAudioDevicePropertyDeviceUID),
+                  transportType(candidate) == kAudioDeviceTransportTypeBuiltIn,
+                  let model = stringProperty(candidate, kAudioDevicePropertyModelUID),
+                  model.replacingOccurrences(of: " Output", with: "") != inputCodec
+            else { continue }
+            return uid
+        }
+        return outputUID    // não há alternativa; segue com a padrão
+    }
+
+    private static func allDeviceIDs() -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),
+                                             &address, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &address, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids
+    }
+
+    private static func outputChannels(_ id: AudioObjectID) -> Int {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0
+        else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 8)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, raw) == noErr else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(
+            raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    private static func transportType(_ id: AudioObjectID) -> UInt32 {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr else { return 0 }
+        return value
+    }
+
+    private static func defaultInputID() -> AudioObjectID? {
+        defaultDeviceID(kAudioHardwarePropertyDefaultInputDevice)
+    }
+    private static func defaultOutputID() -> AudioObjectID? {
+        defaultDeviceID(kAudioHardwarePropertyDefaultOutputDevice)
+    }
+    private static func defaultDeviceID(_ selector: AudioObjectPropertySelector) -> AudioObjectID? {
+        var deviceID = AudioObjectID(kAudioObjectUnknown)
+        var address = AudioObjectPropertyAddress(mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &address, 0, nil, &size, &deviceID) == noErr,
+              deviceID != kAudioObjectUnknown else { return nil }
+        return deviceID
+    }
 
     private static func defaultOutputUID() -> String? {
         var deviceID = AudioObjectID(kAudioObjectUnknown)

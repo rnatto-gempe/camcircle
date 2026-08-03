@@ -401,6 +401,35 @@ Outras armadilhas confirmadas, todas escondidas atrás de `noErr`:
 - **Não mexa em `isExclusive`** depois de `init(stereoGlobalTapButExcludeProcesses:)` — ele
   é o flag de direção, e invertê-lo troca "excluir estes PIDs" por "incluir só estes".
 
+#### A referência de clock não pode dividir codec com o microfone
+
+Sintoma relatado: com as duas fontes ligadas, o áudio "dava split de canal" e perdia muita
+coisa.
+
+O aggregate device do tap precisa de um dispositivo de saída real como referência de clock.
+Eu usava a saída padrão — e no conector de fone do Mac, entrada e saída são **o mesmo
+hardware**:
+
+```
+Microfone Externo         uid: BuiltInHeadphoneInputDevice   modelo: Codec Input
+Fones de Ouvido Externos  uid: BuiltInHeadphoneOutputDevice  modelo: Codec Output
+```
+
+Colocar essa saída no aggregate faz o Core Audio tomar conta do codec e derrubar o lado da
+entrada. O microfone perde canal.
+
+A correção aproveita um fato do tap: ele é **global**, captura toda a saída do sistema
+independente de qual dispositivo entra no aggregate. Então a referência de clock pode vir de
+outro lugar. Agora o app compara o `ModelUID` da saída com o da entrada e, se forem o mesmo
+codec, escolhe outra saída embutida:
+
+```
+clock: BuiltInSpeakerDevice   ·   microfone: engine rodando   ·   religadas: 0
+```
+
+O `religadas: 0` é a medida que importa: antes o `AVAudioEngine` era derrubado e religado
+pelo observador de mudança de configuração. Agora ele não é nem perturbado.
+
 #### Espera adaptativa entre segmentos
 
 Cada requisição encerra no silêncio e é preciso abrir outra. Esperar antes de reabrir fazia

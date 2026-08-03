@@ -876,7 +876,7 @@ final class Captions: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SAÍDA DO SISTEMA
               ligado: \(systemAudio)
               transcrevendo: \(sysTranscriber.isListening)
-              tap ativo: \(sysSource.isRunning)
+              tap ativo: \(sysSource.isRunning)  ·  clock: \(sysSource.clockDevice)
               amostras entregues: \(sysSource.deliveredFrames)
               pico de áudio: \(String(format: "%.4f", sysSource.peakLevel)) (agora) / \(String(format: "%.4f", sysSource.peakEver)) (máximo)
               caracteres: \(sysTranscriber.text.count)
