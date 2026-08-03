@@ -133,6 +133,7 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
         guard isListening, let rec = recognizer else { return }
 
         segmentTimer?.invalidate()
+        commitPartial()          // não perde o que a task anterior já reconheceu
         task?.cancel()
 
         let req = SFSpeechAudioBufferRecognitionRequest()
@@ -170,12 +171,7 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
                     // O segmento morre no silêncio antes de entregar o final, e
                     // o parcial já tem a frase. Descartá-lo fazia o texto
                     // aparecer e desaparecer — medido: 33 parciais, 0 finais.
-                    let pending = self.partial.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !pending.isEmpty {
-                        self.append(segment: pending)
-                        self.partial = ""
-                        self.publish()
-                    }
+                    self.commitPartial()
                     self.onStateChange?()
 
                     // Espera adaptativa. Se havia fala em curso, reabre na hora:
@@ -210,6 +206,7 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
 
         // Rede de segurança: força o fechamento se a frase nunca terminar.
         segmentTimer = Timer.scheduledTimer(withTimeInterval: maxSegment, repeats: false) { [weak self] _ in
+            self?.commitPartial()
             self?.request?.endAudio()
         }
     }
@@ -221,6 +218,20 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
             guard let self, self.isListening else { return }
             self.openSegment()
         }
+    }
+
+    /// Confirma o parcial em curso antes de abandonar o segmento.
+    ///
+    /// Antes isso acontecia só nas rotas de erro e de resultado final. Quando o
+    /// segmento era cancelado na abertura do próximo, ou encerrado pelo timer de
+    /// segurança, o parcial ia embora — medi 163 parciais e 5 caracteres
+    /// guardados. O texto aparecia na tela e não era acumulado.
+    private func commitPartial() {
+        let pending = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pending.isEmpty else { return }
+        append(segment: pending)
+        partial = ""
+        publish()
     }
 
     private func append(segment: String) {
@@ -243,6 +254,7 @@ final class Transcriber: NSObject, SFSpeechRecognizerDelegate {
     func stop() {
         segmentTimer?.invalidate()
         segmentTimer = nil
+        commitPartial()
         request?.endAudio()
         request = nil
         task?.cancel()
