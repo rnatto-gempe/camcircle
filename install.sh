@@ -1,18 +1,22 @@
 #!/bin/bash
-# Compila, instala em ~/Applications, cria o comando `cam` e liga todos os efeitos.
+# Compila os três apps, instala em ~/Applications e cria o comando `cam`.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HOME/.local/bin"
-APP="$HOME/Applications/CamCircle.app"
+APPS=(CamCircle Teleprompter Captions)
 
 "$DIR/build.sh"
 
 echo "==> Instalando em ~/Applications"
 mkdir -p "$HOME/Applications"
-pkill -x CamCircle 2>/dev/null || true
-rm -rf "$APP"
-cp -R "$DIR/CamCircle.app" "$APP"
+for name in "${APPS[@]}"; do
+    target="$HOME/Applications/$name.app"
+    pkill -x "$name" 2>/dev/null || true
+    rm -rf "$target"
+    cp -R "$DIR/$name.app" "$target"
+    echo "    $name.app"
+done
 
 echo "==> Instalando o comando 'cam' em $BIN"
 mkdir -p "$BIN"
@@ -23,16 +27,20 @@ if ! echo ":$PATH:" | grep -q ":$BIN:"; then
     echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
-echo "==> Ligando todos os efeitos"
+echo "==> Ligando os efeitos visuais do círculo"
 "$BIN/cam" all >/dev/null
 
-cat <<TXT
+cat <<'TXT'
 
-Pronto.
+Pronto. Os três apps estão em ~/Applications.
 
-  cam          abre o círculo
-  cam all      abre com todos os efeitos
-  cam stop     fecha
-  cam --help   todas as opções
+  cam                círculo da câmera
+  cam tp             teleprompter (invisível na gravação)
+  cam cc             legendas ao vivo do microfone
+  cam cc system on   legendas também do áudio do sistema
+  cam h              ajuda completa
+
+As legendas exigem o Ditado ativo em
+Ajustes do Sistema > Teclado > Ditado, no idioma que você usar.
 
 TXT

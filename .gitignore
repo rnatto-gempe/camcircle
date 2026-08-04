@@ -1,4 +1,5 @@
 CamCircle.app/
 Teleprompter.app/
+Captions.app/
 *.o
 .DS_Store
