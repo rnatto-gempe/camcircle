@@ -63,6 +63,7 @@ Um app abre o outro sem terminal: `⌃⌥⌘P` alterna o teleprompter, `⌃⌥�
 | [Arquitetura](docs/arquitetura.md) | como as peças se encaixam e por que são três apps |
 | [Armadilhas](docs/armadilhas.md) | **o documento mais útil daqui** — cada defeito que custou horas, e a medição que o revelou |
 | [Pesquisa](docs/pesquisa.md) | o que existe de melhor em transcrição local, medido nesta máquina |
+| [Ditado](docs/ditado.md) | capacidades tipo Wispr Flow: o que dá para fazer com esta base, e o custo de cada uma |
 | [Pendências](docs/pendencias.md) | o que está incompleto, com o estado real de cada medição |
 | [App Store](STORE.md) | por que a loja não é o caminho, e o que seria preciso |
 
