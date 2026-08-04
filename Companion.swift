@@ -1,7 +1,27 @@
 import AppKit
 
-/// Ponte entre o CamCircle e o Teleprompter: cada app abre e fecha o outro.
-/// Este arquivo é compilado nos dois binários.
+/// Valida posições de janela salvas contra as telas que existem agora.
+///
+/// Uma posição gravada com o monitor externo conectado fica fora de qualquer
+/// tela quando ele é desconectado. O app abre, roda, e não se vê nada — foi
+/// exatamente o que aconteceu com `originX = 2969` numa tela de 1440 pontos.
+enum ScreenGuard {
+
+    /// O retângulo tem interseção suficiente com alguma tela para ser alcançável?
+    /// Um terço da área já basta para dar de pegar e arrastar.
+    static func isReachable(_ frame: NSRect) -> Bool {
+        guard frame.width > 0, frame.height > 0 else { return false }
+        let needed = frame.width * frame.height / 3
+        for screen in NSScreen.screens {
+            let overlap = screen.visibleFrame.intersection(frame)
+            if overlap.width * overlap.height >= needed { return true }
+        }
+        return false
+    }
+}
+
+/// Ponte entre os apps: cada um abre e fecha os outros.
+/// Este arquivo é compilado nos três binários.
 enum Companion {
 
     /// Procura o bundle irmão. Primeiro ao lado do app que está rodando — cobre

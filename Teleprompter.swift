@@ -351,7 +351,17 @@ final class Prompter: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         var origin = NSPoint(x: screen.midX - size.width / 2, y: screen.maxY - size.height - 80)
         if defaults.object(forKey: Pref.x) != nil {
-            origin = NSPoint(x: defaults.double(forKey: Pref.x), y: defaults.double(forKey: Pref.y))
+            let saved = NSPoint(x: defaults.double(forKey: Pref.x),
+                                y: defaults.double(forKey: Pref.y))
+            // Descarta posição que não existe mais em nenhuma tela: desconectar
+            // um monitor externo deixaria o painel fora de alcance.
+            if ScreenGuard.isReachable(NSRect(origin: saved, size: size)) {
+                origin = saved
+            } else {
+                // Regrava com a posição válida, senão o descarte se repete sempre.
+                defaults.set(Double(origin.x), forKey: Pref.x)
+                defaults.set(Double(origin.y), forKey: Pref.y)
+            }
         }
 
         window = PromptWindow(contentRect: NSRect(origin: origin, size: size),

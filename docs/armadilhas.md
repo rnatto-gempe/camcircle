@@ -159,6 +159,22 @@ Criado sem frame, ele nasce com tamanho zero, o container de texto fica com larg
 texto nunca é desenhado. Dê frame explícito, `autoresizingMask`, e
 `textContainer?.widthTracksTextView = true`.
 
+### Posição salva sobrevive ao monitor que não existe mais
+
+**Sintoma:** o app abre, o processo roda, e não se vê nada na tela.
+
+A posição da janela é persistida entre execuções. Gravada com um monitor externo conectado,
+ela aponta para coordenadas que deixam de existir quando ele é desconectado:
+
+```
+originX = 2969        em uma tela de 1440 pontos de largura
+```
+
+**Correção:** validar a posição salva contra as telas atuais antes de usá-la
+(`ScreenGuard.isReachable`, exigindo um terço da área dentro de alguma tela), e **regravar** a
+posição corrigida — senão o valor inválido fica guardado e o descarte se repete a cada
+abertura.
+
 ### A sombra é cortada pelo limite da janela
 
 Uma janela do tamanho exato do conteúdo faz a sombra e o glow baterem na borda e virarem um

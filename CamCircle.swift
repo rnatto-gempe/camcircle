@@ -933,8 +933,18 @@ final class Overlay: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         var origin = NSPoint(x: screen.maxX - side - 24, y: screen.minY + 24)
         if defaults.object(forKey: Pref.originX) != nil {
-            origin = NSPoint(x: defaults.double(forKey: Pref.originX),
-                             y: defaults.double(forKey: Pref.originY))
+            let saved = NSPoint(x: defaults.double(forKey: Pref.originX),
+                                y: defaults.double(forKey: Pref.originY))
+            // Só usa a posição salva se ela ainda existe em alguma tela. Sem
+            // esta checagem, desconectar o monitor externo deixa a janela em
+            // coordenadas fora de qualquer tela: o app roda e não se vê nada.
+            if ScreenGuard.isReachable(NSRect(origin: saved, size: CGSize(width: side, height: side))) {
+                origin = saved
+            } else {
+                // Regrava já com a posição válida, senão o valor inválido fica
+                // guardado e o descarte se repete a cada abertura.
+                savePosition(origin)
+            }
         }
 
         window = OverlayWindow(
